@@ -12,6 +12,20 @@ without running scans. Existing rate and scanner defaults are preserved.
 See [Masscan routing and interface selection](USAGE.md#masscan-routing-and-interface-selection)
 for examples, single-route batch limits, and gateway-MAC troubleshooting.
 
+## Application-Wide HTTP/HTTPS Proxy (Fork)
+
+Set `CCTVSCAN_HTTP_PROXY` to an `http://` or `https://` proxy URL, or select a
+protected environment variable with `--http-proxy-env NAME`. The setting applies
+to every first-party HTTP client: metadata, camera detection, login checks,
+HTTP stream/snapshot requests, and geolocation—including dormant helpers.
+All HTTP methods and redirects use the same explicit proxy; `NO_PROXY` does not
+bypass it and failures never fall back to a direct connection.
+
+This is **not a separate HTTP-only mode or an egress sandbox**. Masscan, Naabu
+port discovery, RTSP sockets and ONVIF UDP keep their existing routing. Existing
+credential/snapshot stages are unchanged. See [HTTP proxy configuration](USAGE.md#application-wide-httphttps-proxy)
+for safe configuration, provider restrictions, dependency boundaries and tests.
+
 ## 🚀 Features
 
 - **⚡ Hybrid Port Scanning**: Masscan for high-speed SYN discovery + Naabu for verification

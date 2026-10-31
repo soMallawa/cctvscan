@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"github.com/postfix/cctvscan/internal/httptransport"
 	"net/http"
 	"os"
 	"strings"
@@ -22,13 +23,13 @@ func OptimizedBruteForce(ctx context.Context, host string, loginURLs []string, c
 	// Create optimized HTTP client with connection pooling
 	client := &http.Client{
 		Timeout: timeout,
-		Transport: &http.Transport{
+		Transport: httptransport.NewTransport(&http.Transport{
 			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 			DisableKeepAlives:   false, // Enable keep-alive for better performance
 			MaxIdleConns:        50,
 			MaxIdleConnsPerHost: 10,
 			IdleConnTimeout:     30 * time.Second,
-		},
+		}),
 	}
 
 	// Test each URL concurrently

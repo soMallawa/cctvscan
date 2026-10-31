@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/postfix/cctvscan/internal/httptransport"
 	"net"
 	"net/http"
 	"strings"
@@ -84,12 +85,12 @@ func FindMJPEGPaths(ctx context.Context, host string, ports []int) []string {
 	// Create optimized HTTP client
 	client := &http.Client{
 		Timeout: 2 * time.Second,
-		Transport: &http.Transport{
+		Transport: httptransport.NewTransport(&http.Transport{
 			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 			DisableKeepAlives: true,
 			MaxIdleConns:      10,
 			IdleConnTimeout:   30 * time.Second,
-		},
+		}),
 	}
 
 	// Process ports concurrently
@@ -202,12 +203,12 @@ func OptimizedLoginPageFinder(ctx context.Context, host string, ports []int) []s
 	// Optimized HTTP client
 	client := &http.Client{
 		Timeout: 1 * time.Second, // Shorter timeout for faster scanning
-		Transport: &http.Transport{
+		Transport: httptransport.NewTransport(&http.Transport{
 			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 			DisableKeepAlives: true,
 			MaxIdleConns:      20,
 			IdleConnTimeout:   10 * time.Second,
-		},
+		}),
 	}
 
 	// Use semaphore to limit concurrent requests

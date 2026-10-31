@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"crypto/tls"
+	"github.com/postfix/cctvscan/internal/httptransport"
 	"io"
 	"net"
 	"net/http"
@@ -164,11 +165,11 @@ func ProbeHTTPMeta(ctx context.Context, host string, ports []int) HTTPMeta {
 	meta := HTTPMeta{}
 	client := &http.Client{
 		Timeout: 2 * time.Second,
-		Transport: &http.Transport{
+		Transport: httptransport.NewTransport(&http.Transport{
 			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 			DisableKeepAlives: true,
 			DialContext:       (&net.Dialer{Timeout: 1200 * time.Millisecond}).DialContext,
-		},
+		}),
 	}
 	for _, p := range ports {
 		scheme := "http"
@@ -201,10 +202,10 @@ func FindLoginPages(ctx context.Context, host string, ports []int) []string {
 	paths := []string{"/", "/login", "/admin", "/viewer", "/webadmin", "/index.html"}
 	client := &http.Client{
 		Timeout: 1500 * time.Millisecond,
-		Transport: &http.Transport{
+		Transport: httptransport.NewTransport(&http.Transport{
 			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 			DisableKeepAlives: true,
-		},
+		}),
 	}
 	var out []string
 	for _, p := range ports {

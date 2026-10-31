@@ -12,6 +12,104 @@ This comprehensive guide covers all features and usage patterns for CCTVScan, an
 6. [Examples](#examples)
 7. [Troubleshooting](#troubleshooting)
 
+## Application-Wide HTTP/HTTPS Proxy
+
+This changes routing, not which existing features execute. It does not add a
+separate scan mode, new HTTP methods to probes, new targets, or new credential
+strategies. Use only for assets you are authorized to assess.
+
+### Configuration
+
+Use an environment variable so credentials do not appear in command arguments:
+
+```bash
+# Bash: interactive, hidden input; the proxy URL is not stored in shell history.
+read -r -s -p 'HTTP(S) proxy URL: ' CCTVSCAN_HTTP_PROXY
+printf '\n'
+export CCTVSCAN_HTTP_PROXY
+
+# Local diagnostic only: validates configuration, but sends no proxy request.
+./cctvscan --http-proxy-env CCTVSCAN_HTTP_PROXY --list-interfaces
+
+# For a normal authorized run, append --http-proxy-env CCTVSCAN_HTTP_PROXY
+# to your existing invocation. Its non-HTTP stages still use direct networking.
+
+unset CCTVSCAN_HTTP_PROXY
+```
+
+- Supported proxy URL schemes: `http` and `https`, with optional URL-encoded
+  username/password and port. SOCKS URLs are rejected; they are not silently
+  treated as direct connections. DataImpulse endpoint/protocol/port values must
+  come from your account configuration, not from these illustrative examples.
+- `--http-proxy-env NAME` selects another environment variable. Explicitly
+  selecting a missing/empty variable is an error. This is recommended for
+  unattended proxy-required runs so a missing secret cannot disable the policy.
+- Without the flag, a nonempty `CCTVSCAN_HTTP_PROXY` enables the proxy. If that
+  variable is absent/empty, original client routing is preserved. This does not
+  globally override existing HTTP_PROXY/HTTPS_PROXY behavior of default clients.
+- Malformed proxy configuration fails before scanning. No proxy URL is accepted
+  on the command line. Environment values remain accessible to privileged users
+  and process-inspection tools; use protected secret injection and never `set -x`.
+- Configuration is startup-only, before creating clients/workers. Live proxy
+  changes and previously constructed clients are not supported. Library callers
+  must call `httptransport.Configure` before making clients or starting work.
+
+### Coverage and failure behavior
+
+- All nine first-party custom transports and geolocation use the shared factory.
+  It clones existing timeouts, connection settings and target TLS configuration.
+- HTTP method handling is unchanged: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS,
+  TRACE and extension methods are routed by the transport, not a method filter.
+  This does **not** make probes automatically issue all those methods.
+- Redirects and HTTPS CONNECT tunnels use the supplied proxy. Even localhost and
+  entries in `NO_PROXY` are not bypassed. The proxy's exit network determines
+  target reachability; a private address does not mean your local network.
+- The Go default HTTP transport is also configured, covering default-client and
+  nil-transport dependency requests. No proxy failure causes a direct retry.
+- An HTTPS proxy always has its certificate/hostname verified, even if a camera
+  client permits self-signed target certificates. Target TLS compatibility does
+  not disable proxy authentication. Caller-provided CA roots can be used by
+  library callers; normal CLI operation uses the system trust store.
+- Transport errors are sanitized, without raw proxy URLs, credentials or remote
+  status text. CONNECT rejection, forward HTTP 407 and other proxied request
+  failures have separate error identities. Cancellation/timeout identity is kept.
+  Original error chains are intentionally omitted because they can contain secrets.
+- A plain HTTP 403/5xx is not proof of a proxy outage: it may be a target response.
+  Other than 407, normal forward-proxy response statuses are retained. Response
+  content is untrusted and is not a general-purpose secret-redaction boundary.
+- Existing callers may suppress transport errors or return empty findings. This
+  patch does not redesign result reporting: an empty result is not proof that a
+  camera is absent or that authentication failed. Check provider restrictions
+  and controlled connectivity before interpreting scan results.
+- DataImpulse port permissions, bandwidth, concurrent connections and account
+  permissions still apply. This feature does not bypass blocked destinations.
+
+### Non-HTTP and dependency boundaries
+
+Masscan/raw packets, Naabu TCP port discovery, direct RTSP sockets, ONVIF UDP
+and ordinary DNS are unchanged. This is not VPN routing or process-wide network
+isolation, and it does not disable the existing credential/media stages.
+
+The current CLI only passes validated IP/CIDR targets into Naabu and does not
+enable its passive lookup, ASN expansion, cloud upload or updater paths. Those
+unexposed features have private HTTP transports in the pinned dependencies
+(`retryablehttp`, `asnmap`, update/uncover helpers); replacing the Go default
+transport does not control them. They must be wired explicitly before exposing
+those features. Future custom HTTP clients, DoH settings, or media subprocesses
+also require review; the first-party client coverage test guards current client
+construction sites, not arbitrary third-party code.
+
+### Local verification
+
+```bash
+go test -race ./internal/httptransport ./internal/probe ./cmd/cctvscan
+```
+
+The proxy tests use loopback fixtures and `.invalid` hostnames, not public
+cameras or a paid proxy account. They exercise method forwarding, redirects,
+CONNECT, auth isolation, proxy failure/no fallback, redaction, configuration,
+TLS verification and representative real probe integration.
+
 ## Masscan Routing and Interface Selection
 
 The fork supports explicit interface/gateway control and non-scanning diagnostics:

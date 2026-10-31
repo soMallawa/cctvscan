@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/postfix/cctvscan/internal/httptransport"
 	"io"
 	"net"
 	"net/http"
@@ -164,11 +165,11 @@ func DetectStreams(ctx context.Context, host string, ports []int, outDir string)
 	_ = os.MkdirAll(outDir, 0o755)
 	client := &http.Client{
 		Timeout: 3 * time.Second,
-		Transport: &http.Transport{
+		Transport: httptransport.NewTransport(&http.Transport{
 			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 			DisableKeepAlives: true,
 			DialContext:       (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext,
-		},
+		}),
 	}
 
 	var results []StreamResult

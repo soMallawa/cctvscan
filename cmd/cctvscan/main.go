@@ -10,12 +10,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/postfix/cctvscan/internal/httptransport"
 	"github.com/postfix/cctvscan/internal/portscan"
 	"github.com/postfix/cctvscan/internal/processor"
 	"github.com/postfix/cctvscan/internal/targets"
 )
 
 var (
+	httpProxyEnvFlag   = flag.String("http-proxy-env", "", "Environment variable containing explicit HTTP(S) proxy URL (default: CCTVSCAN_HTTP_PROXY); HTTP(S) only, not raw/RTSP/UDP")
 	portsFlag          = flag.String("ports", "0-65535", "Port range to scan (e.g., '80,443,8000-9000')")
 	rateFlag           = flag.Int("rate", 1000, "Packets per second rate for Masscan and Naabu")
 	retryFlag          = flag.Int("retry", 3, "Number of retries for port scanning")
@@ -45,6 +47,9 @@ func main() {
 	if *helpFlag {
 		printHelp()
 		return
+	}
+	if err := httptransport.ConfigureFromEnv(*httpProxyEnvFlag); err != nil {
+		log.Fatal(err)
 	}
 	if *listInterfacesFlag {
 		interfaces, err := net.Interfaces()

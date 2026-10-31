@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/postfix/cctvscan/internal/httptransport"
 	"io"
 	"net"
 	"net/http"
@@ -86,11 +87,11 @@ func DetectCamera(ctx context.Context, host string, ports []int) []CameraDetecti
 
 	client := &http.Client{
 		Timeout: 3 * time.Second,
-		Transport: &http.Transport{
+		Transport: httptransport.NewTransport(&http.Transport{
 			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 			DisableKeepAlives: true,
 			DialContext:       (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext,
-		},
+		}),
 	}
 
 	for _, port := range ports {

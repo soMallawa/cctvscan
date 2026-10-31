@@ -3,6 +3,7 @@ package geo
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/postfix/cctvscan/internal/httptransport"
 	"io"
 	"net/http"
 	"time"
@@ -23,7 +24,8 @@ type IPInfo struct {
 // GetIPInfo retrieves IP location information from ipinfo.io
 func GetIPInfo(ip string) (*IPInfo, error) {
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Transport: httptransport.NewTransport(nil),
+		Timeout:   10 * time.Second,
 	}
 
 	url := fmt.Sprintf("https://ipinfo.io/%s/json", ip)
