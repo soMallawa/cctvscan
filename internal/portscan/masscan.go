@@ -17,11 +17,14 @@ import (
 
 // MasscanConfig holds configuration for masscan scanning
 type MasscanConfig struct {
-	Ports     string
-	Rate      int
-	Adapter   string
-	AdapterIP string
-	Debug     bool
+	Ports       string
+	Rate        int
+	Adapter     string
+	AdapterIP   string
+	RouterIP    string // Next-hop IPv4 address, not the scan target.
+	RouterMAC   string // Next-hop Ethernet MAC, not the local adapter MAC.
+	RouteTarget string // Explicit IPv4 route reference for this single-route batch.
+	Debug       bool
 }
 
 // MasscanScanner uses masscan for high-speed SYN scanning
@@ -62,6 +65,11 @@ func (s *MasscanScanner) Scan(ctx context.Context, targets []string) (map[string
 		log.Printf("DEBUG: Using ports: %s", portsToScan)
 	}
 
+	cfg, err := PrepareMasscanRouting(ctx, s.cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build masscan command
 	args := []string{
 		"--rate", strconv.Itoa(s.cfg.Rate),
@@ -70,13 +78,20 @@ func (s *MasscanScanner) Scan(ctx context.Context, targets []string) (map[string
 	}
 
 	// Add interface if specified
-	if s.cfg.Adapter != "" {
-		args = append(args, "--interface", s.cfg.Adapter)
+	if cfg.Adapter != "" {
+		args = append(args, "--interface", cfg.Adapter)
 	}
 
 	// Add source IP if specified
-	if s.cfg.AdapterIP != "" {
-		args = append(args, "--source-ip", s.cfg.AdapterIP)
+	if cfg.AdapterIP != "" {
+		args = append(args, "--source-ip", cfg.AdapterIP)
+	}
+
+	if cfg.RouterIP != "" {
+		args = append(args, "--router-ip", cfg.RouterIP)
+	}
+	if cfg.RouterMAC != "" {
+		args = append(args, "--router-mac", cfg.RouterMAC)
 	}
 
 	// Add targets

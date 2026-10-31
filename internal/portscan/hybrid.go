@@ -23,6 +23,9 @@ type HybridConfig struct {
 	Wait         int
 	Adapter      string
 	AdapterIP    string
+	RouterIP     string
+	RouterMAC    string
+	RouteTarget  string
 	ExtraArgs    []string
 	Debug        bool
 	Privileged   bool // Force privileged mode (SYN scan)
@@ -85,11 +88,14 @@ func (s *HybridScanner) Scan(ctx context.Context, targets []string) (map[string]
 		}
 
 		masscanCfg := MasscanConfig{
-			Ports:     s.cfg.Ports,
-			Rate:      s.cfg.Rate,
-			Adapter:   s.cfg.Adapter,
-			AdapterIP: s.cfg.AdapterIP,
-			Debug:     s.cfg.Debug,
+			Ports:       s.cfg.Ports,
+			Rate:        s.cfg.Rate,
+			Adapter:     s.cfg.Adapter,
+			AdapterIP:   s.cfg.AdapterIP,
+			RouterIP:    s.cfg.RouterIP,
+			RouterMAC:   s.cfg.RouterMAC,
+			RouteTarget: s.cfg.RouteTarget,
+			Debug:       s.cfg.Debug,
 		}
 
 		masscanScanner := NewMasscanScanner(masscanCfg)

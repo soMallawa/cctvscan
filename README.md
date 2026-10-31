@@ -2,6 +2,16 @@
 
 A comprehensive pentesting toolkit for **discovering, fingerprinting, and assessing IP cameras** across multiple protocols including HTTP/HTTPS, RTSP, ONVIF, RTMP, and MMS. Enhanced with Python CamXploit-inspired features for maximum detection accuracy.
 
+## Masscan Networking Controls (Fork)
+
+This fork adds `--interface` (alias for `--adapter`), `--router-ip`,
+`--router-mac`, and opt-in `--masscan-route-target` for Linux route/neighbor
+lookup. `--list-interfaces` and `--masscan-route-check` provide JSON diagnostics
+without running scans. Existing rate and scanner defaults are preserved.
+
+See [Masscan routing and interface selection](USAGE.md#masscan-routing-and-interface-selection)
+for examples, single-route batch limits, and gateway-MAC troubleshooting.
+
 ## 🚀 Features
 
 - **⚡ Hybrid Port Scanning**: Masscan for high-speed SYN discovery + Naabu for verification

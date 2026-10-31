@@ -12,6 +12,46 @@ This comprehensive guide covers all features and usage patterns for CCTVScan, an
 6. [Examples](#examples)
 7. [Troubleshooting](#troubleshooting)
 
+## Masscan Routing and Interface Selection
+
+The fork supports explicit interface/gateway control and non-scanning diagnostics:
+
+```bash
+# Local interface names, MACs, IP addresses, MTUs and flags; exits without scanning.
+./cctvscan --list-interfaces
+
+# Resolve the route for a reference IPv4 address; exits without scanning.
+# This example uses a documentation address, not a live scan target.
+./cctvscan --masscan-route-check --masscan-route-target 192.0.2.10
+
+# Validate explicit overrides without scanning (values below are examples).
+./cctvscan --masscan-route-check --interface eth0 \
+  --adapter-ip 192.0.2.2 --router-ip 192.0.2.1 \
+  --router-mac 02:00:00:00:00:01
+```
+
+Routing flags can also be passed to a normal, authorized scan:
+
+- `--adapter NAME` or `--interface NAME`: outgoing interface. Both may be supplied only with the same value. Explicit interface and `--adapter-ip` are passed to Masscan and Naabu.
+- `--adapter-ip IPv4`: explicit source IPv4 address; overrides the route-selected source (`prefsrc`).
+- `--router-ip IPv4`: Masscan's next-hop gateway. This is **not the destination IP** for a routed network.
+- `--router-mac MAC`: Masscan's next-hop **Ethernet** MAC, not the local NIC's MAC. Must be a nonzero unicast 6-byte address.
+- `--masscan-route-target IPv4`: opt-in Linux `iproute2` lookup for one explicit reference address. Fills the Masscan interface, preferred source IPv4, gateway and cached gateway MAC when available. Explicit values take precedence; conflicting interface results fail.
+- `--masscan-route-check`: print routing configuration as JSON and exit before target expansion, discovery, verification or processing. Empty fields mean no override; this is not a reachability/privilege check.
+- `--list-interfaces`: local interface inventory as JSON and exit. No scan target is required.
+
+### Limits and operational notes
+
+- Defaults remain unchanged: no route subprocess is run unless `--masscan-route-target` is set. No interface, gateway or MAC from the development host is hard-coded.
+- Route discovery is **Masscan-only**, IPv4-only and requires Linux `ip -j`. It reads route/neighbor state with a shared four-second deadline; it does not ping, send ARP or warm a neighbor cache. Naabu retains its existing routing behavior unless explicitly configured with `--adapter` / `--adapter-ip`.
+- A reference selects **one route for the whole Masscan batch**; it does not validate every target's route. Split targets using different gateways/interfaces into separate runs, especially with VPNs, policy routing or multiple NICs. Route lookup is not repeated for every endpoint.
+- An empty/failed/incomplete neighbor entry leaves the MAC unset so Masscan can perform its normal resolution. Inspect the JSON before running if Masscan needs a manual MAC workaround. Cached entries may age; rerun diagnostics after network changes.
+- An on-link reference without a gateway fails unless an explicit gateway or MAC is supplied. Masscan normally resolves an interface gateway, not each target individually; this resolver cannot safely infer one destination MAC for an on-link subnet. A manual next-hop override must be appropriate for the entire batch.
+- Subprocesses use argument arrays, not a shell. Interface and address overrides are validated; route errors fail before launching Masscan.
+- These controls do not add proxy support. Masscan sends raw traffic directly and requires suitable privileges/capabilities and an Ethernet-compatible interface. A VPN/TUN interface appearing in the inventory is not proof Masscan can use it. For containers, inspect the container's interfaces/routes, not the host's.
+- `--rate` already applies to Masscan and Naabu; this change does not raise it. Existing `--retry` / `--wait` behavior is unchanged (the wrapper currently forwards them to Naabu only).
+- Normal scan mode still runs the upstream processing pipeline; diagnostic flags are the non-scanning mode. This patch changes no credential, stream, capture or proxy logic.
+
 ## Quick Start
 
 ### Basic Usage
