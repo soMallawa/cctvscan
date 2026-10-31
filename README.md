@@ -1,429 +1,130 @@
-# CCTVScan - Advanced IP Camera Security Assessment Tool
+# CCTVScan
 
-A comprehensive pentesting toolkit for **discovering, fingerprinting, and assessing IP cameras** across multiple protocols including HTTP/HTTPS, RTSP, ONVIF, RTMP, and MMS. Enhanced with Python CamXploit-inspired features for maximum detection accuracy.
+A Go CLI for authorized IPv4 device discovery, camera-oriented fingerprinting and media endpoint inspection. Uses Masscan for external SYN discovery and Naabu for CONNECT discovery/verification. **An open port, vendor hint, protocol response, candidate URL, media header and playable stream are different kinds of evidence.** CCTVScan does not claim playback verification or exploitability.
 
-## Masscan Networking Controls (Fork)
+## Build a fresh binary
 
-This fork adds `--interface` (alias for `--adapter`), `--router-ip`,
-`--router-mac`, and opt-in `--masscan-route-target` for Linux route/neighbor
-lookup. `--list-interfaces` and `--masscan-route-check` provide JSON diagnostics
-without running scans. Existing rate and scanner defaults are preserved.
+Requirements: Go 1.25+, C compiler and libpcap development headers/libraries. External SYN discovery also needs Masscan installed before running; CONNECT discovery does not need the Masscan executable. Install system dependencies during setup, never during a scan.
 
-See [Masscan routing and interface selection](USAGE.md#masscan-routing-and-interface-selection)
-for examples, single-route batch limits, and gateway-MAC troubleshooting.
-
-## Application-Wide HTTP/HTTPS Proxy (Fork)
-
-Set `CCTVSCAN_HTTP_PROXY` to an `http://` or `https://` proxy URL, or select a
-protected environment variable with `--http-proxy-env NAME`. The setting applies
-to every first-party HTTP client: metadata, camera detection, login checks,
-HTTP stream/snapshot requests, and geolocation—including dormant helpers.
-All HTTP methods and redirects use the same explicit proxy; `NO_PROXY` does not
-bypass it and failures never fall back to a direct connection.
-
-This is **not a separate HTTP-only mode or an egress sandbox**. Masscan, Naabu
-port discovery, RTSP sockets and ONVIF UDP keep their existing routing. Existing
-credential/snapshot stages are unchanged. See [HTTP proxy configuration](USAGE.md#application-wide-httphttps-proxy)
-for safe configuration, provider restrictions, dependency boundaries and tests.
-
-## 🚀 Features
-
-- **⚡ Hybrid Port Scanning**: Masscan for high-speed SYN discovery + Naabu for verification
-- **🎯 Dual Port Modes**: 
-  - **Default**: Fast 79 camera-specific ports
-  - **Comprehensive**: 1000+ thorough camera port scan
-- **🎯 Multi-Protocol Support**: HTTP/HTTPS, RTSP, RTMP, MMS, ONVIF protocol detection
-- **🔍 Enhanced Brand Detection**: Advanced detection for 15+ camera brands with server headers, content analysis, and DVR/NVR patterns
-- **🛡️ Expanded CVE Database**: 100+ CVEs across major camera brands with direct NVD links
-- **🔐 Intelligent Credential Testing**: Multi-method authentication testing with form detection
-- **📹 Comprehensive Stream Detection**: Multi-protocol stream detection (MJPEG, RTSP, RTMP, MMS, HLS)
-- **🌍 Geographic Intelligence**: IP location lookup with ISP and coordinate information
-- **🔍 Search Integration**: Direct links to Shodan, Censys, Zoomeye, and Google Dorking
-- **📊 Advanced Reporting**: Detailed console output with enhanced detection results
-
-## Supported Camera Brands
-
-- **Hikvision** (18 CVEs) - Advanced server header detection
-- **Dahua** (14 CVEs) - DVR/NVR pattern recognition
-- **Axis** (17 CVEs) - Axis-specific endpoint detection
-- **Bosch** (5 CVEs) - Security system integration
-- **Samsung** (11 CVEs) - Samsung Techwin detection
-- **Panasonic** (3 CVEs) - Network camera patterns
-- **Vivotek** (4 CVEs) - IP camera detection
-- **Sony** (2 CVEs) - IPela series detection
-- **CP Plus** (3 CVEs) - UVR model detection
-- **Foscam** - IP camera detection
-- **D-Link** - Camera-specific patterns
-- **EasyN** - Network camera detection
-- **Edimax** - IP camera patterns
-- **Intellinet** - Camera detection
-- **TP-Link** - Camera-specific detection
-- **Trendnet** - Network camera patterns
-- **Mobotix** - Advanced camera detection
-- **Generic** - Fallback camera detection
-
-## Architecture
-
-### Modular Architecture
-- **`Maascan`**: High-speed SYN scanning for external targets with performance optimizations
-- **`Nabu`**: Reliable port verification and localhost scanning with efficient string operations
-- Concurrent HTTP/RTSP/ONVIF enumeration
-- Concurrent credential brute force with connection pooling 
-- Cached brand detection with optimized string matching
-
-### Performance Optimizations
-- **Concurrent Post-Scan Processing**: All fingerprinting, brute force, and enumeration run concurrently
-- **Smart Caching**: Brand detection, HTTP metadata, and credential caching
-- **Optimized String Operations**: Custom parsing with pre-compiled prefixes and efficient matching
-- **Connection Pooling**: HTTP client reuse with keep-alive connections
-- **Memory Management**: Pre-allocated buffers and efficient data structures
-- **Thread-Safe Operations**: Minimal locking with concurrent-safe data structures
-- **Buffer Management**: 1MB scanner buffers for large output processing
-
-### Port Coverage
-
-#### Default Mode (79 ports) - Fast Scanning
-- **Web Ports**: 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 443, 8080, 8443, 8000-8010, 8081-8099, 8100-8104
-- **RTSP Ports**: 554, 8554, 10554, 1554, 2554, 3554, 4554, 5554, 6554, 7554, 9554
-- **RTMP Ports**: 1935, 1936, 1937, 1938, 1939
-- **ONVIF/Discovery**: 3702
-- **Miscellaneous**: 37777, 5000, 7001, 8999, 9000-9002, 10000, 8181, 5001, 50000, 8880, 8889, 3001
-
-#### Comprehensive Mode (1000+ ports) - Thorough Scanning
-- **All Default Ports** plus extensive high-port ranges
-- **Custom Camera Ports**: 37777-37800 (Hikvision, Dahua)
-- **ONVIF Ports**: 3702-3710
-- **High Port Ranges**: 10000-65010 (increments of 10)
-- **MMS Ports**: 1755-1760
-- **Extended Web Ports**: 5000-9010, 8888-9999
-- **VLC Streaming**: 8080-8190
-
-## Installation
-
-### Prerequisites
-
-- **Go 1.22+**
-- **Masscan** (for SYN scanning)
-- **Naabu** (for verification)
-
-### Build from Source
-
-```bash
-git clone https://github.com/postfix/cctvscan.git
-cd cctvscan
-go build -o cctvscan ./cmd/cctvscan
+```sh
+# Debian/Ubuntu setup, if missing
+sudo apt-get install build-essential libpcap-dev masscan
+make build
+./bin/cctvscan --help
 ```
 
-### Install Dependencies
+The obsolete committed executable was removed. `make build` or `mkdir -p bin && go build -trimpath -o bin/cctvscan ./cmd/cctvscan` creates the current executable. Generated executables, results and snapshots are not source artifacts. Naabu is a pinned Go dependency, not a separate executable to download at scan time.
 
-```bash
-# Install masscan (Ubuntu/Debian)
-sudo apt-get install masscan
+## Inspect the scope without scanning
 
-# Install naabu
-go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
-
-# Set masscan capabilities for SYN scanning
-sudo setcap cap_net_raw+ep $(which masscan)
+```sh
+./bin/cctvscan --plan --ports 80,443,554 192.0.2.0/24
+./bin/cctvscan --plan --ports 0-65535 --unprivileged 192.0.2.1
+./bin/cctvscan --plan --comprehensive 192.0.2.1
 ```
 
-## Technical Details
+Examples use documentation-only addresses; replace them with your authorized scope. `--plan`, `--list-interfaces` and `--masscan-route-check` do not scan. No target is silently sampled.
 
-### Scanning Strategy
-1. **Target Analysis**: Automatically detects localhost vs external targets
-2. **Discovery Phase**: 
-   - External targets: Masscan SYN scan (10,000+ pps)
-   - Localhost targets: Naabu CONNECT scan
-3. **Verification Phase**: Naabu verification of discovered ports
-4. **Protocol Analysis**: HTTP/HTTPS, RTSP, ONVIF probing
-5. **Security Assessment**: Brand detection, CVE lookup, credential testing
+- Default preset: **79 unique ports**.
+- Comprehensive preset: **685 unique ports**, not the previously advertised 1000+.
+- `--ports` explicitly overrides the preset, including `0-65535`; it conflicts with `--comprehensive` rather than being ignored.
+- IPv4 CIDRs remain compact through parsing and are passed natively to backends. IPv6 is explicitly unsupported, not silently expanded.
+- `--max-targets` defaults to 1,048,576 requested addresses. Overlapping ranges count toward a conservative upper bound. Increase it deliberately or use `0` to disable this guard. Oversized inputs are rejected, never truncated.
 
-### Performance Metrics
-- **Scanning Speed**: 10,000+ packets/second with masscan
-- **Memory Usage**: <50MB for typical scans
-- **CPU Efficiency**: Optimized string parsing and caching
-- **Network Efficiency**: Smart port selection and rate limiting
+## Run an authorized scan
 
-## Usage
+```sh
+# CONNECT discovery; no Masscan executable or root required
+./bin/cctvscan --unprivileged --ports 80,443,554 --output results 192.0.2.1
 
-### Basic Scanning
-
-```bash
-# Scan single IP (default 79 ports)
-sudo ./cctvscan 192.168.1.100
-
-# Scan CIDR range
-sudo ./cctvscan 192.168.1.0/24
-
-# Scan targets from file
-sudo ./cctvscan targets.txt
+# External SYN discovery via Masscan, then exact-port CONNECT verification
+sudo ./bin/cctvscan --rate 1000 --output results 192.0.2.0/24
 ```
 
-### Advanced Scanning Options
+Keep scan rates appropriate for your network. `--unprivileged` never invokes Masscan. Mixed loopback/external target entries are partitioned rather than changing an entire batch's backend. Verification groups hosts with identical discovered port sets: it never scans a union cross-product or implicitly expands to Naabu's top-port preset. A verification error remains an error; unverified discovery is not promoted to verified results.
 
-```bash
-# Comprehensive scan (1000+ ports)
-sudo ./cctvscan --comprehensive 192.168.1.100
+## Optional operations are explicit
 
-# Custom port range
-sudo ./cctvscan --ports 80,443,8080,554 192.168.1.100
+Normal discovery **does not test credentials, send ONVIF discovery packets, save snapshots or launch detached media work**.
 
-# Debug mode with verbose output
-sudo ./cctvscan --debug 192.168.1.100
+- `--check-credentials --creds FILE`: explicitly enable the existing Basic-auth check using your supplied file. Only explicit Basic challenges are tested. The coordinator is bounded, stops on success/cancellation and joins all work before returning. Results distinguish `not_tested`, `no_match`, `found`, `inconclusive` and `canceled`. Values are not printed or serialized. Digest/form authentication is not implemented.
+- `--capture`: explicitly save validated JPEG/PNG or first-part MJPEG images from media-evidenced HTTP endpoints. Files are bounded to 256 KiB input and 8 megapixels, re-encoded as JPEG, mode 0600, with hashed filenames. Capture is joined before reporting; a failure is not reported as a saved image. This is not RTSP capture or video recording.
+- `--onvif`: explicitly send a unicast UDP WS-Discovery probe. Only namespace-valid, correlated NetworkVideoTransmitter ProbeMatches count as detection. An arbitrary UDP reply is not ONVIF proof.
 
-# Force SYN scan (requires root)
-sudo ./cctvscan --privileged 192.168.1.100
+Credential files use one `user:password` pair per line; blank lines and `#` comments are ignored. File changes are read afresh rather than hidden behind a stale global credential cache. A file over 1 MiB or malformed entry is rejected, not silently truncated.
 
-# Force CONNECT scan (no root required)
-sudo ./cctvscan --unprivileged 192.168.1.100
+## Bounded work and deadlines
 
-# Custom credentials file
-sudo ./cctvscan --creds mycreds.txt 192.168.1.100
+| Control | Default | Meaning |
+|---|---:|---|
+| `--rate` | 1000 | Discovery packet/connection rate; verification is reduced once |
+| `--retry` | 3 | Extra attempts; forwarded to Masscan/Naabu |
+| `--wait` | 1 | Late-reply/warm-up seconds; forwarded to both backends |
+| `--threads` | 25 | Naabu worker bound |
+| `--host-workers` | 5 | Fixed post-scan worker pool |
+| `--http-requests` | 5 | Shared concurrent first-party HTTP requests, held through body completion |
+| `--http-per-host` | 2 | HTTP request slots per destination hostname, across ports |
+| `--http-rps` | 10 | Shared HTTP request pacing, including redirects; 0 disables pacing |
+| `--host-timeout` | 30s | Per-host post-scan wall-clock budget |
+| `--timeout` | 30m | Overall context, including target parsing |
 
-# Custom output directory
-sudo ./cctvscan --output /tmp/results 192.168.1.100
+Raw RTSP/UDP sockets honor cancellation and deadlines. HTTP bodies, images, workers, caches and expansion are bounded. The pinned Naabu dependency may finish an in-progress dial/warm-up before returning after cancellation; it is not hard real-time process isolation. External scanner/protocol sockets are not governed by the HTTP request budget.
 
-# Adjust scan rate
-sudo ./cctvscan --rate 5000 192.168.1.100
+## Results and evidence
 
-# Custom timeout
-sudo ./cctvscan --timeout 1h 192.168.1.100
+Every executed scan publishes a unique atomic `scan-*.json` under `--output` (directory default `.`), even for a canceled/inconclusive scan once discovery has started. Files are private (0600); successive runs do not intentionally replace one another. Failed validation does not start a scan. If the output directory cannot be written, discovery is not started.
+
+- `State`: `complete`, `inconclusive`, `failed` or `canceled`.
+- `VerifiedPorts`: confirmed discovery/verification output.
+- `UnverifiedDiscovery`: only retained separately when verification cannot complete.
+- Per-host and per-endpoint statuses retain failed requests instead of turning transport failures into empty negative findings.
+- HTTP metadata covers every supplied HTTP-like port. Root metadata is reused for classification; neutral hosts do not trigger repeated deep path discovery.
+- RTSP 401/403/404 counts as a protocol response, with status/auth metadata—not a working feed.
+- Protocol path candidates have state `candidate`, status 0 and `Verified=false`.
+- HTTP media responses have state `media_header` and payload/header evidence. `Verified=true` means this limited media evidence, **not** playback, decoding the whole video, camera identity or authorization.
+- Camera/vendor classification is heuristic and is labeled as a hint/likely camera. Generic HTML, generic URL path names and short ambiguous vendor substrings are not sufficient vendor evidence.
+- CVEs are a deliberately small source-verified vendor association list, with no placeholders. These are research leads, never confirmed device vulnerabilities. See [CVE sources](internal/cvedb/SOURCES.md).
+
+Exit 0 means the executed pipeline completed without recorded stage errors, not that every host is a camera or every advisory applies. Exit 1 means a failed/inconclusive/canceled run or configuration/runtime error; Go's flag parser uses exit 2 for malformed/unknown flags. Read the saved state and stage errors, not just an empty list. Original error objects, body snippets and credential values are excluded from JSON.
+
+## Explicit application-wide HTTP/HTTPS proxy
+
+```sh
+# Set this securely outside shell history; do not put a real credential in argv.
+export CCTVSCAN_HTTP_PROXY='http://USER:PASSWORD@PROXY_HOST:PORT'
+./bin/cctvscan --unprivileged --ports 80,443 --output results 192.0.2.1
+
+# Select a different secret-bearing environment variable
+./bin/cctvscan --http-proxy-env PRIVATE_PROXY --plan 192.0.2.1
 ```
 
-### Command Line Options
+All first-party HTTP/HTTPS methods and redirects use explicitly configured policy, including helper/enrichment clients. An explicit proxy ignores `NO_PROXY`, rejects malformed configuration and does not fall back to direct HTTP. HTTPS proxy certificates/hostnames remain verified independently of permissive target TLS for self-signed cameras. Proxy errors are sanitized. A plain forward-proxy HTTP response cannot always be attributed conclusively to a target.
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--comprehensive` | Use 1000+ camera ports instead of default 79 | false |
-| `--ports` | Custom port range (e.g., '80,443,8000-9000') | 0-65535 |
-| `--rate` | Packets per second rate for naabu | 1000 |
-| `--retry` | Number of retries for port scanning | 3 |
-| `--wait` | Seconds to wait for late replies | 1 |
-| `--adapter` | Network adapter name for naabu | auto |
-| `--adapter-ip` | Source IP address for naabu | auto |
-| `--timeout` | Overall scan timeout (e.g., '30m', '1h') | 30m |
-| `--creds` | Credentials file for brute force | /etc/cctvscan/credentials.txt |
-| `--output` | Output directory for results | . |
-| `--debug` | Enable debug mode with verbose output | false |
-| `--privileged` | Force privileged mode (SYN scan) | auto |
-| `--unprivileged` | Force unprivileged mode (CONNECT scan) | auto |
-| `--threads` | Number of threads for naabu | 25 |
-| `--help` | Show help message | false |
+**Not OS-level egress isolation:** Masscan/Naabu raw/TCP discovery, RTSP, UDP and any independently launched subprocess networking remain separate. Dependency-private transports are not guaranteed by first-party factories; optional dependency stdin/update paths are disabled in the scanner wrapper. Target TLS intentionally accepts self-signed/untrusted certificates and must not be interpreted as authenticated target identity. No live commercial proxy account was tested.
 
-### Enhanced Detection Features
+## Masscan routing controls
 
-The tool automatically provides:
-- **Target expansion** from CIDR notation and file input
-- **Intelligent port scanning** with naabu integration
-- **Multi-protocol detection** (HTTP/HTTPS, RTSP, RTMP, MMS, ONVIF)
-- **Advanced brand fingerprinting** with 15+ camera brands
-- **Comprehensive CVE reporting** with direct NVD links
-- **Intelligent credential testing** with multiple auth methods
-- **Multi-protocol stream detection** (MJPEG, RTSP, RTMP, MMS, HLS)
-- **Geographic intelligence** with IP location lookup
-- **Search integration** with Shodan, Censys, Zoomeye, Google Dorking
+`--adapter` / `--interface` (aliases), `--adapter-ip`, `--router-ip`, `--router-mac` and `--masscan-route-target` are opt-in. Router MAC means the **next-hop** MAC, not the adapter's own MAC. No machine-specific adapter, gateway or MAC is baked in.
 
-## Workflow
-
-1. **Target Processing**: Parse and expand targets from command line or files
-2. **Port Discovery**: 
-   - **Default Mode**: Fast 79 camera-specific ports
-   - **Comprehensive Mode**: 1000+ thorough camera port scan
-3. **Protocol Probing**: HTTP metadata extraction, RTSP service detection, ONVIF discovery
-4. **Enhanced Brand Fingerprinting**: Multi-method detection using server headers, content analysis, DVR/NVR patterns
-5. **Comprehensive Stream Detection**: Multi-protocol stream detection (MJPEG, RTSP, RTMP, MMS, HLS)
-6. **CVE Analysis**: Vulnerability assessment based on detected brands
-7. **Credential Testing**: Multi-method authentication testing on protected endpoints
-8. **Geographic Intelligence**: IP location lookup with ISP and coordinate information
-9. **Search Integration**: Generate links to Shodan, Censys, Zoomeye, Google Dorking
-10. **Advanced Reporting**: Comprehensive console output with enhanced detection results
-
-## Port Scanning Modes
-
-### Default Mode (79 ports) - Fast Scanning
-- **Use Case**: Quick reconnaissance and initial assessment
-- **Speed**: ~5-10 seconds per target
-- **Coverage**: Most common camera ports
-- **Command**: `./cctvscan 192.168.1.100`
-
-### Comprehensive Mode (1000+ ports) - Thorough Scanning
-- **Use Case**: Complete security assessment and penetration testing
-- **Speed**: ~30-60 seconds per target
-- **Coverage**: Extensive port ranges including high ports
-- **Command**: `./cctvscan --comprehensive 192.168.1.100`
-
-### Custom Port Mode - Targeted Scanning
-- **Use Case**: Specific port ranges or known services
-- **Speed**: Variable based on port count
-- **Coverage**: User-defined port ranges
-- **Command**: `./cctvscan --ports 80,443,8080,554 192.168.1.100`
-
-## Project Structure
-
-```
-cctvscan/
-├── cmd/cctvscan/main.go          # Main application entry point
-├── internal/
-│   ├── cvedb/cvedb.go            # Comprehensive CVE database (100+ CVEs)
-│   ├── fingerprint/
-│   │   ├── brand.go              # Advanced brand detection (15+ brands)
-│   │   └── optimized.go          # Optimized brand detection with caching
-│   ├── probe/
-│   │   ├── httpmeta.go           # HTTP metadata and login page detection
-│   │   ├── camera_detection.go   # Enhanced camera detection with headers/content
-│   │   ├── rtsp.go               # RTSP service probing and validation
-│   │   └── onvif.go              # ONVIF discovery
-│   ├── streams/
-│   │   ├── mjpeg.go              # MJPEG stream detection (legacy)
-│   │   └── comprehensive.go      # Multi-protocol stream detection
-│   ├── geo/geo.go                # IP geographic location lookup
-│   ├── search/search.go          # Search engine integration (Shodan, Censys, etc.)
-│   ├── portscan/
-│   │   ├── naabu.go              # Naabu integration wrapper
-│   │   ├── masscan.go            # Masscan integration
-│   │   └── hybrid.go             # Hybrid scanner combining both
-│   ├── processor/optimized.go    # Concurrent post-scan processing
-│   ├── credbrute/optimized.go    # Optimized credential brute force
-│   ├── targets/expand.go         # Target parsing and expansion
-│   └── util/util.go              # Utility functions
-└── README.md
+```sh
+./bin/cctvscan --list-interfaces
+./bin/cctvscan --masscan-route-check --masscan-route-target 192.0.2.1
+./bin/cctvscan --masscan-route-check --adapter eth0 --router-ip 192.0.2.254
 ```
 
-## Technical Details
+Use a route reference only for a single-route batch. Explicit overrides are validated and lookup runs once per batch. Diagnostics do not enable scanning.
 
-### Enhanced Brand Detection
+## Development and verification
 
-The tool uses comprehensive multi-method detection across:
-- **HTTP Server headers** - Brand-specific server strings
-- **HTTP response body content** - Page titles, form fields, keywords
-- **RTSP Server headers** - RTSP service identification
-- **RTSP Public command capabilities** - ONVIF and streaming capabilities
-- **Content-Type analysis** - Camera-specific MIME types
-- **DVR/NVR pattern recognition** - Specialized DVR/NVR detection
-- **Model-specific indicators** - CP Plus UVR-0401E1, Hikvision DS- series, etc.
-
-### Comprehensive Stream Detection
-
-Multi-protocol stream detection supporting:
-- **MJPEG Streams** - Real-time video streams
-- **RTSP Streams** - Real-time streaming protocol
-- **RTMP Streams** - Real-time messaging protocol
-- **MMS Streams** - Microsoft media streaming
-- **HLS Streams** - HTTP live streaming
-- **Generic Streams** - Fallback detection
-
-### Geographic Intelligence
-
-IP location lookup provides:
-- **ISP Information** - Internet service provider details
-- **Geographic Coordinates** - Latitude/longitude with Google Maps links
-- **Location Details** - City, region, country, postal code
-- **Timezone Information** - Local timezone data
-
-### Search Integration
-
-Direct integration with security search engines:
-- **Shodan** - Device and service discovery
-- **Censys** - Host and certificate analysis
-- **Zoomeye** - Network device search
-- **Google Dorking** - Advanced search queries for camera discovery
-
-### CVE Database
-
-Contains **100+ CVEs** with direct links to NVD for detailed vulnerability information. The database is organized by brand for efficient lookup and reporting.
-
-### Credential Testing
-
-Intelligent credential testing that:
-- Only tests endpoints requiring authentication (401/403 responses)
-- Supports custom credential files
-- Uses proper Basic auth encoding
-- Respects timeouts and connection limits
-
-## Example Output
-
-### Enhanced Detection Results
-
-```
-=== Processing 192.168.1.100 ===
-Open ports: [80 443 8080 554]
-HTTP ports: [80 443 8080]
-RTSP ports: [554]
-HTTP Server: Hikvision-Webs
-Login pages: [http://192.168.1.100/ http://192.168.1.100/login]
-
-🎥 Camera Detected: Hikvision
-   Model: DS-2CD2143G0-I
-   Server: Hikvision-Webs
-   Indicators: [Server Header: Hikvision-Webs, Content Type: text/html]
-   Auth Required: Basic
-   Endpoints: [http://192.168.1.100/ http://192.168.1.100/login]
-
-📺 Streams Found (3):
-   RTSP: rtsp://192.168.1.100:554/Streaming/Channels/101
-   HTTP-Video: http://192.168.1.100:8080/video/mjpg.cgi
-   MJPEG: http://192.168.1.100:80/mjpg/video.mjpg
-
-🛡️ CVEs Found:
-   CVE-2021-36260: https://nvd.nist.gov/vuln/detail/CVE-2021-36260
-   CVE-2017-7921: https://nvd.nist.gov/vuln/detail/CVE-2017-7921
-
-🌍 Geographic Information:
-   IP: 192.168.1.100
-   ISP: Private Network
-   Location: Local Network
-   Coordinates: N/A (Private IP)
-
-🔍 Search Integration:
-   Shodan: https://www.shodan.io/search?query=192.168.1.100
-   Censys: https://search.censys.io/hosts/192.168.1.100
-   Zoomeye: https://www.zoomeye.org/searchResult?q=192.168.1.100
-   Google Dork: https://www.google.com/search?q=site:192.168.1.100+inurl:view/view.shtml
+```sh
+make build
+make test
+make vet
+# Optional installed tools
+staticcheck ./...
+govulncheck ./...
 ```
 
-## CamXploit Integration
+`make test` runs the race suite. Regression fixtures use local servers, in-memory callbacks and fake scanner processes; no real camera credentials are required. Do not run every historical benchmark blindly: some upstream benchmark functions contain network target examples. Run the pure CVE/compact-target benchmarks explicitly as documented in [AUDIT-FIXES.md](AUDIT-FIXES.md).
 
-This tool incorporates advanced features inspired by the Python CamXploit tool:
-
-### Enhanced Detection Capabilities
-- **Comprehensive Port Lists**: 1000+ camera-specific ports for thorough scanning
-- **Advanced Brand Detection**: 15+ camera brands with server headers and content analysis
-- **DVR/NVR Pattern Recognition**: Specialized detection for recording devices
-- **Multi-Protocol Stream Detection**: RTSP, RTMP, MMS, HTTP/HTTPS stream detection
-- **Geographic Intelligence**: IP location lookup with ISP and coordinate information
-- **Search Integration**: Direct links to Shodan, Censys, Zoomeye, Google Dorking
-
-### Performance Improvements
-- **Go Implementation**: Significantly faster than Python equivalent
-- **Concurrent Processing**: Multi-threaded detection and scanning
-- **Memory Efficiency**: Optimized for large-scale scanning
-- **Network Optimization**: Smart port selection and rate limiting
-
-### Feature Comparison
-
-| Feature | CamXploit (Python) | CCTVScan (Go) |
-|---------|-------------------|---------------|
-| Port Scanning | 1000+ ports | 79 (default) / 1000+ (comprehensive) |
-| Brand Detection | 10+ brands | 15+ brands |
-| Stream Detection | Basic | Multi-protocol (RTSP, RTMP, MMS, HLS) |
-| Geographic Info | Basic | Enhanced with coordinates |
-| Search Integration | Basic | Advanced with multiple engines |
-| Performance | Moderate | High (Go + concurrency) |
-| Memory Usage | High | Low (optimized) |
-| Dependencies | Many | Minimal |
-
-## Legal and Ethical Use
-
-⚠️ **WARNING**: This tool is intended for security assessment purposes only. Use only on systems you own or have explicit written permission to test. Unauthorized scanning may violate local laws and regulations.
-
-## License
-
-MIT License - See LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit pull requests for:
-- Additional camera brand detection patterns
-- New CVE entries
-- Protocol support improvements
-- Bug fixes and performance enhancements
+See [USAGE.md](USAGE.md) for the operational contract and [AUDIT-FIXES.md](AUDIT-FIXES.md) for the finding-to-fix/test map, validation evidence and remaining boundaries.

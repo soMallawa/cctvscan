@@ -1,16 +1,25 @@
 package streams
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"github.com/postfix/cctvscan/internal/httptransport"
+	"github.com/postfix/cctvscan/internal/probe"
+	"image"
+	"image/jpeg"
+	_ "image/png"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
+	"strconv"
 	"time"
 )
 
@@ -18,16 +27,21 @@ import (
 type StreamType string
 
 const (
-	StreamMJPEG   StreamType = "MJPEG"
-	StreamRTSP    StreamType = "RTSP"
-	StreamRTMP    StreamType = "RTMP"
-	StreamMMS     StreamType = "MMS"
-	StreamHLS     StreamType = "HLS"
-	StreamGeneric StreamType = "Generic"
+	StreamMJPEG    StreamType = "MJPEG"
+	StreamSnapshot StreamType = "Snapshot"
+	StreamRTSP     StreamType = "RTSP"
+	StreamRTMP     StreamType = "RTMP"
+	StreamMMS      StreamType = "MMS"
+	StreamHLS      StreamType = "HLS"
+	StreamGeneric  StreamType = "Generic"
 )
 
 // StreamResult contains information about detected streams
 type StreamResult struct {
+	SavedPath   string
+	State       string
+	Evidence    string
+	Verified    bool
 	URL         string
 	Type        StreamType
 	ContentType string
@@ -160,208 +174,128 @@ var StreamingProtocols = []string{
 	"rtsp://", "rtmp://", "mms://", "rtp://",
 }
 
-// DetectStreams performs comprehensive stream detection
+// DetectStreams returns media-evidenced HTTP endpoints and explicitly unverified
+// protocol candidates. It does not acquire snapshots implicitly.
 func DetectStreams(ctx context.Context, host string, ports []int, outDir string) []StreamResult {
-	_ = os.MkdirAll(outDir, 0o755)
-	client := &http.Client{
-		Timeout: 3 * time.Second,
-		Transport: httptransport.NewTransport(&http.Transport{
-			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
-			DisableKeepAlives: true,
-			DialContext:       (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext,
-		}),
-	}
-
+	r, _ := DetectStreamsDetailed(ctx, host, ports)
+	return r
+}
+func DetectStreamsDetailed(ctx context.Context, host string, ports []int) ([]StreamResult, error) {
+	client := &http.Client{Timeout: 3 * time.Second, Transport: httptransport.NewTransport(&http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DialContext: (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext})}
 	var results []StreamResult
-
+	var errs []error
 	for _, port := range ports {
-		// Determine protocol
-		protocol := "http"
-		if port == 443 || port == 8443 || port == 8444 {
-			protocol = "https"
+		if err := ctx.Err(); err != nil {
+			return results, err
 		}
-
-		baseURL := fmt.Sprintf("%s://%s:%d", protocol, host, port)
-
-		// Check for streams based on port type
-		if isRTSPPort(port) {
+		switch {
+		case probe.IsRTSPPort(port):
 			results = append(results, checkRTSPStreams(ctx, host, port)...)
-		} else if isRTMPPort(port) {
+		case isRTMPPort(port):
 			results = append(results, checkRTMPStreams(ctx, host, port)...)
-		} else if isMMSPort(port) {
+		case isMMSPort(port):
 			results = append(results, checkMMSStreams(ctx, host, port)...)
-		} else {
-			// Check HTTP/HTTPS streams
-			results = append(results, checkHTTPStreams(ctx, client, baseURL, port)...)
-		}
-	}
-
-	// Save stream snapshots
-	for _, result := range results {
-		if result.Type == StreamMJPEG || result.Type == StreamGeneric {
-			saveStreamSnapshot(ctx, client, result, outDir)
-		}
-	}
-
-	return results
-}
-
-// checkHTTPStreams checks for HTTP/HTTPS based streams
-func checkHTTPStreams(ctx context.Context, client *http.Client, baseURL string, port int) []StreamResult {
-	var results []StreamResult
-
-	// Check all HTTP stream paths
-	for _, path := range StreamPaths["http"] {
-		url := baseURL + path
-		result := checkStreamURL(ctx, client, url, port, path)
-		if result != nil {
-			results = append(results, *result)
-		}
-	}
-
-	return results
-}
-
-// checkRTSPStreams checks for RTSP streams
-func checkRTSPStreams(ctx context.Context, host string, port int) []StreamResult {
-	var results []StreamResult
-
-	for _, path := range StreamPaths["rtsp"] {
-		url := fmt.Sprintf("rtsp://%s:%d%s", host, port, path)
-		// For RTSP, we can't easily check with HTTP client
-		// This would require RTSP client implementation
-		// For now, we'll add it as a potential stream
-		results = append(results, StreamResult{
-			URL:         url,
-			Type:        StreamRTSP,
-			ContentType: "application/sdp",
-			Status:      200, // Assume available
-			Path:        path,
-		})
-	}
-
-	return results
-}
-
-// checkRTMPStreams checks for RTMP streams
-func checkRTMPStreams(ctx context.Context, host string, port int) []StreamResult {
-	var results []StreamResult
-
-	for _, path := range StreamPaths["rtmp"] {
-		url := fmt.Sprintf("rtmp://%s:%d%s", host, port, path)
-		// RTMP detection would require RTMP client
-		// For now, add as potential stream
-		results = append(results, StreamResult{
-			URL:         url,
-			Type:        StreamRTMP,
-			ContentType: "application/x-rtmp",
-			Status:      200,
-			Path:        path,
-		})
-	}
-
-	return results
-}
-
-// checkMMSStreams checks for MMS streams
-func checkMMSStreams(ctx context.Context, host string, port int) []StreamResult {
-	var results []StreamResult
-
-	url := fmt.Sprintf("mms://%s:%d", host, port)
-	results = append(results, StreamResult{
-		URL:         url,
-		Type:        StreamMMS,
-		ContentType: "application/x-mms",
-		Status:      200,
-		Path:        "/",
-	})
-
-	return results
-}
-
-// checkStreamURL checks a specific URL for stream content
-func checkStreamURL(ctx context.Context, client *http.Client, url string, port int, path string) *StreamResult {
-	// Method 1: Try HEAD request first
-	req, _ := http.NewRequestWithContext(ctx, "HEAD", url, nil)
-	req.Header.Set("User-Agent", "CCTVTool/1.0")
-	resp, err := client.Do(req)
-	if err == nil && resp.StatusCode == 200 {
-		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-		if isStreamContentType(contentType) || isStreamURL(url) {
-			resp.Body.Close()
-			return &StreamResult{
-				URL:         url,
-				Type:        determineStreamType(contentType, url),
-				ContentType: contentType,
-				Status:      resp.StatusCode,
-				Path:        path,
+		case port == 3702 || port == 37777:
+			continue
+		default:
+			scheme := "http"
+			if port == 443 || port == 8443 || port == 8444 {
+				scheme = "https"
 			}
-		}
-		resp.Body.Close()
-	}
-
-	// Method 2: Try GET request for better detection
-	req, _ = http.NewRequestWithContext(ctx, "GET", url, nil)
-	req.Header.Set("User-Agent", "CCTVTool/1.0")
-	resp, err = client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 200 {
-		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-
-		// Check content type
-		if isStreamContentType(contentType) {
-			return &StreamResult{
-				URL:         url,
-				Type:        determineStreamType(contentType, url),
-				ContentType: contentType,
-				Status:      resp.StatusCode,
-				Path:        path,
-			}
-		}
-
-		// Check URL patterns
-		if isStreamURL(url) {
-			return &StreamResult{
-				URL:         url,
-				Type:        determineStreamType(contentType, url),
-				ContentType: contentType,
-				Status:      resp.StatusCode,
-				Path:        path,
-			}
-		}
-
-		// Check response content for stream indicators
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		if err == nil {
-			content := strings.ToLower(string(body))
-			if containsStreamKeywords(content) {
-				return &StreamResult{
-					URL:         url,
-					Type:        StreamGeneric,
-					ContentType: contentType,
-					Status:      resp.StatusCode,
-					Path:        path,
+			base := scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port))
+			seen := map[string]bool{}
+			for _, path := range StreamPaths["http"] {
+				if seen[path] {
+					continue
+				}
+				seen[path] = true
+				r, err := checkStreamURLDetailed(ctx, client, base+path, port, path)
+				if err != nil {
+					errs = append(errs, err)
+					break
+				}
+				if r != nil {
+					results = append(results, *r)
 				}
 			}
 		}
 	}
+	return results, errors.Join(errs...)
+}
 
-	return nil
+func protocolCandidates(ctx context.Context, host string, port int, scheme string, kind StreamType, paths []string) []StreamResult {
+	if ctx.Err() != nil {
+		return nil
+	}
+	out := make([]StreamResult, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, StreamResult{URL: scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port)) + path, Type: kind, Path: path, State: "candidate"})
+	}
+	return out
+}
+func checkRTSPStreams(ctx context.Context, host string, port int) []StreamResult {
+	return protocolCandidates(ctx, host, port, "rtsp", StreamRTSP, StreamPaths["rtsp"])
+}
+func checkRTMPStreams(ctx context.Context, host string, port int) []StreamResult {
+	return protocolCandidates(ctx, host, port, "rtmp", StreamRTMP, StreamPaths["rtmp"])
+}
+func checkMMSStreams(ctx context.Context, host string, port int) []StreamResult {
+	return protocolCandidates(ctx, host, port, "mms", StreamMMS, []string{"/"})
+}
+func checkStreamURL(ctx context.Context, client *http.Client, url string, port int, path string) *StreamResult {
+	r, _ := checkStreamURLDetailed(ctx, client, url, port, path)
+	return r
+}
+func checkStreamURLDetailed(ctx context.Context, client *http.Client, url string, port int, path string) (*StreamResult, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httptransport.Do(client, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return nil, err
+	}
+	ct := resp.Header.Get("Content-Type")
+	kind, evidence := mediaEvidence(data, ct)
+	if evidence == "" {
+		return nil, nil
+	}
+	return &StreamResult{URL: url, Type: kind, ContentType: ct, Status: resp.StatusCode, Path: path, State: "media_header", Evidence: evidence, Verified: true}, nil
+}
+func mediaEvidence(data []byte, ct string) (StreamType, string) {
+	if _, format, err := image.DecodeConfig(bytes.NewReader(data)); err == nil && (format == "jpeg" || format == "png") {
+		return StreamSnapshot, "Decoded image header"
+	}
+	if bytes.HasPrefix(bytes.TrimSpace(data), []byte("#EXTM3U")) && bytes.Contains(data, []byte("#EXT-X-")) {
+		return StreamHLS, "HLS playlist header; playback not verified"
+	}
+	if len(data) > 12 && string(data[4:8]) == "ftyp" {
+		return StreamGeneric, "MP4 container header; playback not verified"
+	}
+	mediaType, params, err := mime.ParseMediaType(ct)
+	if err == nil && mediaType == "multipart/x-mixed-replace" {
+		if params["boundary"] != "" {
+			part, err := multipart.NewReader(bytes.NewReader(data), params["boundary"]).NextPart()
+			if err == nil {
+				defer part.Close()
+				if _, format, e := image.DecodeConfig(part); e == nil && format == "jpeg" {
+					return StreamMJPEG, "Multipart JPEG framing/header; playback not verified"
+				}
+			}
+		}
+	}
+	return "", ""
 }
 
 // Helper functions
-func isRTSPPort(port int) bool {
-	for _, p := range StreamingPorts["rtsp"] {
-		if port == p {
-			return true
-		}
-	}
-	return false
-}
 
 func isRTMPPort(port int) bool {
 	for _, p := range StreamingPorts["rtmp"] {
@@ -381,105 +315,79 @@ func isMMSPort(port int) bool {
 	return false
 }
 
-func isStreamContentType(contentType string) bool {
-	for _, ct := range StreamContentTypes {
-		if strings.Contains(contentType, ct) {
-			return true
-		}
-	}
-	return false
-}
-
-func isStreamURL(url string) bool {
-	urlLower := strings.ToLower(url)
-
-	// Check for video file extensions
-	for _, ext := range VideoExtensions {
-		if strings.Contains(urlLower, ext) {
-			return true
-		}
-	}
-
-	// Check for streaming protocols
-	for _, protocol := range StreamingProtocols {
-		if strings.Contains(urlLower, protocol) {
-			return true
-		}
-	}
-
-	// Check for stream path patterns
-	streamPaths := []string{"/video", "/stream", "/live", "/mjpg", "/snapshot"}
-	for _, path := range streamPaths {
-		if strings.Contains(urlLower, path) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func containsStreamKeywords(content string) bool {
-	keywords := []string{"stream", "video", "live", "camera", "mjpg", "mpeg"}
-	for _, keyword := range keywords {
-		if strings.Contains(content, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
-func determineStreamType(contentType, url string) StreamType {
-	urlLower := strings.ToLower(url)
-	contentTypeLower := strings.ToLower(contentType)
-
-	if strings.Contains(urlLower, "rtsp://") {
-		return StreamRTSP
-	}
-	if strings.Contains(urlLower, "rtmp://") {
-		return StreamRTMP
-	}
-	if strings.Contains(urlLower, "mms://") {
-		return StreamMMS
-	}
-	if strings.Contains(contentTypeLower, "multipart/x-mixed-replace") ||
-		strings.Contains(contentTypeLower, "image/jpeg") {
-		return StreamMJPEG
-	}
-	if strings.Contains(contentTypeLower, "video/") {
-		return StreamGeneric
-	}
-
-	return StreamGeneric
-}
-
-func saveStreamSnapshot(ctx context.Context, client *http.Client, result StreamResult, outDir string) {
-	req, _ := http.NewRequestWithContext(ctx, "GET", result.URL, nil)
-	req.Header.Set("User-Agent", "CCTVTool/1.0")
-	resp, err := client.Do(req)
+// SaveSnapshot validates and atomically saves one bounded image. It is only
+// called by explicit capture operations; ordinary discovery never writes media.
+func SaveSnapshot(ctx context.Context, client *http.Client, result StreamResult, outDir string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", result.URL, nil)
 	if err != nil {
-		return
+		return "", err
+	}
+	resp, err := httptransport.Do(client, req)
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode == 200 {
-		// Save up to first 256KB
-		filename := fmt.Sprintf("%s_%d_%s.jpg",
-			strings.ReplaceAll(result.URL, "://", "_"),
-			result.Status,
-			sanitizePath(result.Path))
-		filepath := filepath.Join(outDir, filename)
-
-		f, err := os.Create(filepath)
-		if err != nil {
-			return
-		}
-		defer f.Close()
-
-		io.CopyN(f, resp.Body, 256*1024)
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("snapshot HTTP status %d", resp.StatusCode)
 	}
+	reader := io.Reader(resp.Body)
+	ct, params, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if ct == "multipart/x-mixed-replace" {
+		if params["boundary"] == "" {
+			return "", errors.New("missing multipart boundary")
+		}
+		part, e := multipart.NewReader(reader, params["boundary"]).NextPart()
+		if e != nil {
+			return "", e
+		}
+		defer part.Close()
+		reader = part
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, 256*1024+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > 256*1024 {
+		return "", errors.New("snapshot exceeds 256 KiB limit")
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return "", errors.New("snapshot is not a valid image")
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > 4096 || cfg.Height > 4096 || int64(cfg.Width)*int64(cfg.Height) > 8*1024*1024 {
+		return "", errors.New("snapshot dimensions exceed safety budget")
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return "", errors.New("incomplete snapshot image")
+	}
+	if err = os.MkdirAll(outDir, 0700); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(result.URL))
+	name := filepath.Join(outDir, fmt.Sprintf("snapshot_%x.jpg", sum[:16]))
+	f, err := os.CreateTemp(outDir, ".snapshot-*")
+	if err != nil {
+		return "", err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err = jpeg.Encode(f, img, nil); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err = f.Close(); err != nil {
+		return "", err
+	}
+	if err = ctx.Err(); err != nil {
+		return "", err
+	}
+	if err = os.Rename(tmp, name); err != nil {
+		return "", err
+	}
+	return name, nil
 }
-
-func sanitizePath(path string) string {
-	replacer := strings.NewReplacer("/", "_", "?", "_", "&", "_", "=", "_")
-	return replacer.Replace(path)
+func saveStreamSnapshot(ctx context.Context, client *http.Client, result StreamResult, outDir string) error {
+	_, err := SaveSnapshot(ctx, client, result, outDir)
+	return err
 }

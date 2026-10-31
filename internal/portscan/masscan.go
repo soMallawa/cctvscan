@@ -17,6 +17,7 @@ import (
 
 // MasscanConfig holds configuration for masscan scanning
 type MasscanConfig struct {
+	Retry, Wait int
 	Ports       string
 	Rate        int
 	Adapter     string
@@ -73,6 +74,7 @@ func (s *MasscanScanner) Scan(ctx context.Context, targets []string) (map[string
 	// Build masscan command
 	args := []string{
 		"--rate", strconv.Itoa(s.cfg.Rate),
+		"--wait", strconv.Itoa(s.cfg.Wait), "--retries", strconv.Itoa(s.cfg.Retry),
 		"--open-only",
 		"-p", portsToScan,
 	}
@@ -130,7 +132,7 @@ func (s *MasscanScanner) Scan(ctx context.Context, targets []string) (map[string
 
 // getPortsToScan returns the ports to scan with caching
 func (s *MasscanScanner) getPortsToScan() string {
-	if s.cfg.Ports == "0-65535" || s.cfg.Ports == "" {
+	if s.cfg.Ports == "" {
 		s.cacheMutex.RLock()
 		if cached, exists := s.portCache["cctv"]; exists {
 			s.cacheMutex.RUnlock()

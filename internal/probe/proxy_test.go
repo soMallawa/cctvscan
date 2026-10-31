@@ -20,7 +20,7 @@ func TestMetadataAndLoginRequestsUseConfiguredProxy(t *testing.T) {
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxied.Add(1)
 		w.Header().Set("Server", "fixture")
-		w.Write([]byte("fixture"))
+		w.Write([]byte(`<form><input type="password" name="password"></form>`))
 	}))
 	defer proxy.Close()
 	if err := httptransport.Configure(proxy.URL); err != nil {

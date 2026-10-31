@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ type NaabuConfig struct {
 
 // NaabuScanner uses naabu for port verification and localhost scanning
 type NaabuScanner struct {
+	run func(context.Context, NaabuConfig, []string) (map[string][]int, error)
 	cfg NaabuConfig
 }
 
@@ -43,6 +45,15 @@ func NewNaabuScanner(cfg NaabuConfig) *NaabuScanner {
 
 // Scan performs naabu scanning for the given targets
 func (s *NaabuScanner) Scan(ctx context.Context, targets []string) (map[string][]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.run != nil {
+		return s.run(ctx, s.cfg, targets)
+	}
+	if s.cfg.Privileged && s.cfg.Unprivileged {
+		return nil, fmt.Errorf("conflicting scan modes")
+	}
 	if len(targets) == 0 {
 		return map[string][]int{}, nil
 	}
@@ -66,10 +77,11 @@ func (s *NaabuScanner) Scan(ctx context.Context, targets []string) (map[string][
 	}
 
 	options := &runner.Options{
-		Host:       goflags.StringSlice(targets),
+		Host:         goflags.StringSlice(targets),
+		DisableStdin: true, DisableUpdateCheck: true, NoColor: true,
 		Ports:      s.cfg.Ports,
 		Rate:       s.cfg.Rate,
-		Retries:    s.cfg.Retry,
+		Retries:    s.cfg.Retry + 1,
 		ScanType:   scanType,
 		SourceIP:   s.cfg.AdapterIP,
 		Interface:  s.cfg.Adapter,
@@ -78,7 +90,7 @@ func (s *NaabuScanner) Scan(ctx context.Context, targets []string) (map[string][
 		Debug:      s.cfg.Debug,
 		Timeout:    timeout,
 		Threads:    threads,
-		WarmUpTime: 1, // Add warm-up time for SYN scans (in seconds)
+		WarmUpTime: s.cfg.Wait,
 	}
 
 	if s.cfg.Debug {
@@ -90,7 +102,9 @@ func (s *NaabuScanner) Scan(ctx context.Context, targets []string) (map[string][
 	var mu sync.Mutex
 
 	// Set up callback to collect results
-	options.OnResult = func(hostResult *result.HostResult) {
+	// Use receive events: pinned Naabu's final OnResult path can omit exact
+	// host:port targets when its bare-IP hostname lookup is absent.
+	options.OnReceive = func(hostResult *result.HostResult) {
 		if hostResult.IP != "" && len(hostResult.Ports) > 0 {
 			mu.Lock()
 			for _, port := range hostResult.Ports {
@@ -122,6 +136,9 @@ func (s *NaabuScanner) Scan(ctx context.Context, targets []string) (map[string][
 		log.Printf("DEBUG: Naabu discovered %d hosts with ports", len(results))
 	}
 
+	if err := ctx.Err(); err != nil {
+		return results, err
+	}
 	return results, nil
 }
 
@@ -129,19 +146,19 @@ func (s *NaabuScanner) Scan(ctx context.Context, targets []string) (map[string][
 func (s *NaabuScanner) determineScanType() string {
 	// If explicitly configured, use that
 	if s.cfg.Privileged {
-		return "SYN"
+		return runner.SynScan
 	}
 	if s.cfg.Unprivileged {
-		return "CONNECT"
+		return runner.ConnectScan
 	}
 
 	// Auto-detect based on privileges
 	// Check if running as root (Unix) or with admin privileges (Windows)
 	if s.isPrivileged() {
-		return "SYN"
+		return runner.SynScan
 	}
 
-	return "CONNECT"
+	return runner.ConnectScan
 }
 
 // isPrivileged checks if the process has sufficient privileges for SYN scans
@@ -162,42 +179,52 @@ func (s *NaabuScanner) VerifyPorts(ctx context.Context, discoveredPorts map[stri
 		return discoveredPorts, nil
 	}
 
-	// Convert discovered ports to naabu format
-	var targets []string
-	for host := range discoveredPorts {
-		targets = append(targets, host)
-	}
-
-	// Build port string for naabu
-	allPorts := make(map[int]bool)
-	for _, ports := range discoveredPorts {
-		for _, port := range ports {
-			allPorts[port] = true
+	// Group identical port sets. Pinned Naabu's host:port input changes meaning
+	// with a global Ports value, while an empty Ports value enables defaults.
+	// Bare hosts plus their exact nonempty port set avoid both scope expansions.
+	groups := map[string][]string{}
+	for host, ports := range discoveredPorts {
+		set := map[int]bool{}
+		for _, p := range ports {
+			set[p] = true
+		}
+		ps := make([]int, 0, len(set))
+		for p := range set {
+			ps = append(ps, p)
+		}
+		sort.Ints(ps)
+		if len(ps) > 0 {
+			spec := buildPortString(ps)
+			groups[spec] = append(groups[spec], host)
 		}
 	}
-
-	var portList []int
-	for port := range allPorts {
-		portList = append(portList, port)
+	specs := make([]string, 0, len(groups))
+	for spec := range groups {
+		specs = append(specs, spec)
 	}
-
-	portStr := buildPortString(portList)
-
-	// Update config for naabu verification
-	verifyCfg := s.cfg
-	verifyCfg.Ports = portStr
-	verifyCfg.Rate = s.cfg.Rate / 2      // Slower rate for verification
-	verifyCfg.Timeout = 10 * time.Second // Longer timeout for verification
-
-	naabuScanner := NewNaabuScanner(verifyCfg)
-
-	// Run naabu verification
-	verifiedPorts, err := naabuScanner.Scan(ctx, targets)
-	if err != nil {
-		return nil, err
+	sort.Strings(specs)
+	out := map[string][]int{}
+	for _, spec := range specs {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		hosts := groups[spec]
+		sort.Strings(hosts)
+		cfg := s.cfg
+		cfg.Ports = spec
+		cfg.Privileged = false
+		cfg.Unprivileged = true
+		scanner := NewNaabuScanner(cfg)
+		scanner.run = s.run
+		r, err := scanner.Scan(ctx, hosts)
+		if err != nil {
+			return out, err
+		}
+		for h, ps := range r {
+			out[h] = append(out[h], ps...)
+		}
 	}
-
-	return verifiedPorts, nil
+	return out, nil
 }
 
 // buildPortString converts a slice of ports to naabu-compatible string
@@ -223,17 +250,18 @@ func ValidateNaabuInstallation() error {
 		Ports:      "80",
 		Rate:       100,
 		Silent:     true,
-		ScanType:   "CONNECT", // Use CONNECT for validation to avoid privilege issues
+		ScanType:   runner.ConnectScan, // Use CONNECT for validation to avoid privilege issues
 		Timeout:    5 * time.Second,
 		Threads:    1,
 		WarmUpTime: 0,
 	}
 
-	_, err := runner.NewRunner(options)
+	r, err := runner.NewRunner(options)
 	if err != nil {
 		return fmt.Errorf("naabu not available: %w", err)
 	}
 
+	defer r.Close()
 	log.Printf("Naabu installation validated")
 	return nil
 }

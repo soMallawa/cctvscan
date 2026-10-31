@@ -8,15 +8,15 @@ import (
 )
 
 // Brand keyword lists
-var brandKeysHikvision = []string{"hikvision", "dvr", "nvr", "hik-connect", "ivms", "web service"}
-var brandKeysDahua = []string{"dahua", "dvr", "nvr", "dss", "smartpss", "dmss"}
+var brandKeysHikvision = []string{"hikvision", "hik-connect", "ivms"}
+var brandKeysDahua = []string{"dahua", "smartpss", "dmss"}
 var brandKeysAxis = []string{"axis", "axis communications", "axis camera", "axis mjpg"}
-var brandKeysSony = []string{"sony", "ipela", "snc", "sony network camera"}
-var brandKeysBosch = []string{"bosch", "security systems", "flexidome", "dinion", "autodome"}
+var brandKeysSony = []string{"sony", "ipela", "sony network camera"}
+var brandKeysBosch = []string{"bosch", "flexidome", "dinion", "autodome"}
 var brandKeysSamsung = []string{"samsung", "samsung techwin", "samsung sds", "hanwha", "wisenet"}
-var brandKeysPanasonic = []string{"panasonic", "network camera", "wv", "bb", "blc"}
-var brandKeysVivotek = []string{"vivotek", "network camera", "ip camera", "fd", "sd"}
-var brandKeysCPPlus = []string{"cp plus", "cp-plus", "cpplus", "cp_plus", "uvr", "0401e1", "uvr-0401e1", "uvr0401e1"}
+var brandKeysPanasonic = []string{"panasonic"}
+var brandKeysVivotek = []string{"vivotek"}
+var brandKeysCPPlus = []string{"cp plus", "cp-plus", "cpplus", "cp_plus", "uvr-0401e1", "uvr0401e1"}
 var brandKeysFoscam = []string{"foscam", "foscam camera", "foscam ip camera"}
 var brandKeysDLink = []string{"d-link", "dlink", "d-link camera", "dlink camera"}
 var brandKeysEasyN = []string{"easyn", "easyn camera", "easyn ip camera"}
@@ -40,37 +40,8 @@ var versionPatterns = map[string]*regexp.Regexp{
 }
 
 // Web page content patterns for brand detection
-var webContentPatterns = map[string]*regexp.Regexp{
-	"Hikvision":  regexp.MustCompile(`(?i)(?:hikvision|hik-connect|ivms|web service|login\.jsp|main\.jsp)`),
-	"Dahua":      regexp.MustCompile(`(?i)(?:dahua|dss|smartpss|dmss|login\.html|main\.html)`),
-	"Axis":       regexp.MustCompile(`(?i)(?:axis|axis communications|axis camera|axis mjpg|axis-cgi)`),
-	"Sony":       regexp.MustCompile(`(?i)(?:sony|ipela|snc|sony network camera)`),
-	"Bosch":      regexp.MustCompile(`(?i)(?:bosch|flexidome|dinion|autodome|security systems)`),
-	"Samsung":    regexp.MustCompile(`(?i)(?:samsung|hanwha|wisenet|samsung techwin)`),
-	"Panasonic":  regexp.MustCompile(`(?i)(?:panasonic|wv|bb|blc|network camera)`),
-	"Vivotek":    regexp.MustCompile(`(?i)(?:vivotek|fd|sd|ip camera|network camera)`),
-	"CP Plus":    regexp.MustCompile(`(?i)(?:cp plus|cpplus|cp-plus|cp_plus|uvr|0401e1|uvr-0401e1|uvr0401e1)`),
-	"Foscam":     regexp.MustCompile(`(?i)(?:foscam|foscam camera|foscam ip camera)`),
-	"D-Link":     regexp.MustCompile(`(?i)(?:d-link|dlink|d-link camera|dlink camera)`),
-	"EasyN":      regexp.MustCompile(`(?i)(?:easyn|easyn camera|easyn ip camera)`),
-	"Edimax":     regexp.MustCompile(`(?i)(?:edimax|edimax camera|edimax ip camera)`),
-	"Intellinet": regexp.MustCompile(`(?i)(?:intellinet|intellinet camera|intellinet ip camera)`),
-	"TP-Link":    regexp.MustCompile(`(?i)(?:tp-link|tplink|tp-link camera|tplink camera)`),
-	"Trendnet":   regexp.MustCompile(`(?i)(?:trendnet|trendnet camera|trendnet ip camera)`),
-	"Mobotix":    regexp.MustCompile(`(?i)(?:mobotix|mobotix camera|mobotix ip camera)`),
-}
 
 // Title patterns for brand detection
-var titlePatterns = map[string]*regexp.Regexp{
-	"Hikvision": regexp.MustCompile(`(?i)<title>.*?(?:hikvision|hik-connect|ivms).*?</title>`),
-	"Dahua":     regexp.MustCompile(`(?i)<title>.*?(?:dahua|dss|smartpss).*?</title>`),
-	"Axis":      regexp.MustCompile(`(?i)<title>.*?(?:axis|axis communications).*?</title>`),
-	"Sony":      regexp.MustCompile(`(?i)<title>.*?(?:sony|ipela).*?</title>`),
-	"Bosch":     regexp.MustCompile(`(?i)<title>.*?(?:bosch|flexidome).*?</title>`),
-	"Samsung":   regexp.MustCompile(`(?i)<title>.*?(?:samsung|hanwha|wisenet).*?</title>`),
-	"Panasonic": regexp.MustCompile(`(?i)<title>.*?(?:panasonic|wv|bb).*?</title>`),
-	"Vivotek":   regexp.MustCompile(`(?i)<title>.*?(?:vivotek|fd|sd).*?</title>`),
-}
 
 // DetectResult contains brand detection results with version information
 type DetectResult struct {
@@ -87,83 +58,24 @@ func Detect(serverHdr, body, rtspServer string) (brand, note string) {
 
 // DetectWithVersion performs brand detection and returns version information
 func DetectWithVersion(serverHdr, body, rtspServer string) DetectResult {
-	lh := strings.ToLower(serverHdr)
-	lb := strings.ToLower(body)
-	lr := strings.ToLower(rtspServer)
-
-	// Enhanced brand detection with multiple methods
-	brands := []string{"Hikvision", "Dahua", "Axis", "Sony", "Bosch", "Samsung", "Panasonic", "Vivotek", "CP Plus", "Foscam", "D-Link", "EasyN", "Edimax", "Intellinet", "TP-Link", "Trendnet", "Mobotix"}
-
-	for _, brand := range brands {
-		// Method 1: Header matching
-		if headerContainsAny(lh, getBrandKeys(brand)) {
+	text := strings.ToLower(serverHdr + "\n" + body + "\n" + rtspServer)
+	for _, brand := range []string{"Hikvision", "Dahua", "Axis", "Sony", "Bosch", "Samsung", "Panasonic", "Vivotek", "CP Plus", "Foscam", "D-Link", "EasyN", "Edimax", "Intellinet", "TP-Link", "Trendnet", "Mobotix"} {
+		if headerContainsAny(text, getBrandKeys(brand)) {
 			version := extractVersion(body, brand)
+			if version == "" {
+				version = extractVersion(rtspServer, brand)
+			}
 			note := ""
 			if version != "" {
 				note = "Version: " + version
 			}
 			return DetectResult{Brand: brand, Note: note, Version: version}
 		}
-
-		// Method 2: Web content pattern matching
-		if webContentPatterns[brand] != nil && webContentPatterns[brand].MatchString(body) {
-			version := extractVersion(body, brand)
-			note := "Web content match"
-			if version != "" {
-				note += " | Version: " + version
-			}
-			return DetectResult{Brand: brand, Note: note, Version: version}
-		}
-
-		// Method 3: Title pattern matching
-		if titlePatterns[brand] != nil && titlePatterns[brand].MatchString(body) {
-			version := extractVersion(body, brand)
-			note := "Title match"
-			if version != "" {
-				note += " | Version: " + version
-			}
-			return DetectResult{Brand: brand, Note: note, Version: version}
-		}
-
-		// Method 4: Body keyword matching
-		if headerContainsAny(lb, getBrandKeys(brand)) {
-			version := extractVersion(body, brand)
-			note := ""
-			if version != "" {
-				note = "Version: " + version
-			}
-			return DetectResult{Brand: brand, Note: note, Version: version}
-		}
-
-		// Method 5: RTSP server matching
-		if strings.Contains(lr, strings.ToLower(brand)) {
-			version := extractVersion(rtspServer, brand)
-			note := "RTSP server: " + rtspServer
-			if version != "" {
-				note += " | Version: " + version
-			}
-			return DetectResult{Brand: brand, Note: note, Version: version}
-		}
 	}
-
-	// RTSP server brand detection (fallback)
-	if rtspServer != "" {
-		if norm := normalizeRtspBrandFromServer(rtspServer); norm != "RTSP" && norm != "" {
-			version := extractVersion(rtspServer, norm)
-			note := "RTSP server: " + rtspServer
-			if version != "" {
-				note += " | Version: " + version
-			}
-			return DetectResult{Brand: norm, Note: note, Version: version}
-		}
+	if headerContainsAny(text, brandKeysGeneric) {
+		return DetectResult{Brand: "Unknown cam"}
 	}
-
-	// Generic camera hints
-	if headerContainsAny(lh, brandKeysGeneric) || headerContainsAny(lb, brandKeysGeneric) || headerContainsAny(lr, brandKeysGeneric) {
-		return DetectResult{Brand: "Unknown cam", Note: "", Version: ""}
-	}
-
-	return DetectResult{Brand: "", Note: "", Version: ""}
+	return DetectResult{}
 }
 
 // extractVersion extracts version information from content for a specific brand
@@ -229,88 +141,25 @@ func headerContainsAny(hdr string, keys []string) bool {
 	return false
 }
 
-func normalizeRtspBrandFromServer(srvRaw string) string {
-	s := strings.TrimSpace(srvRaw)
-	low := strings.ToLower(s)
-
-	if strings.Contains(low, "hipcam") {
-		return "Hipcam"
-	}
-	if strings.Contains(low, "tvt") {
-		return "TVT"
-	}
-	if strings.Contains(low, "ubnt") || strings.Contains(low, "ubiquiti") {
-		return "Ubiquiti"
-	}
-	if strings.Contains(low, "gstreamer") {
-		return "GStreamer"
-	}
-	if strings.Contains(low, "h264dvr") {
-		return "H264DVR"
-	}
-	if strings.Contains(low, "rtprtspflyer") {
-		return "RtpRtspFlyer"
-	}
-	if strings.Contains(low, "rtsp server") || strings.Contains(low, "rtsp") {
-		return "RTSP"
-	}
-
-	// fallback: return as-is if we don't recognize it
-	if s != "" {
-		return s
-	}
-	return "RTSP"
-}
-
 // AnalyzeWebContent performs deep analysis of web content for brand detection
-func AnalyzeWebContent(body string) DetectResult {
-	// Look for specific web interface patterns
-	webPatterns := map[string]*regexp.Regexp{
-		"Hikvision": regexp.MustCompile(`(?i)(?:hikvision|hik-connect|ivms|web service|login\.jsp|main\.jsp|hikvision.*?version.*?(\d+\.\d+\.\d+))`),
-		"Dahua":     regexp.MustCompile(`(?i)(?:dahua|dss|smartpss|dmss|login\.html|main\.html|dahua.*?version.*?(\d+\.\d+\.\d+))`),
-		"Axis":      regexp.MustCompile(`(?i)(?:axis|axis communications|axis camera|axis mjpg|axis-cgi|axis.*?version.*?(\d+\.\d+\.\d+))`),
-		"Sony":      regexp.MustCompile(`(?i)(?:sony|ipela|snc|sony network camera|sony.*?version.*?(\d+\.\d+\.\d+))`),
-		"Bosch":     regexp.MustCompile(`(?i)(?:bosch|flexidome|dinion|autodome|security systems|bosch.*?version.*?(\d+\.\d+\.\d+))`),
-		"Samsung":   regexp.MustCompile(`(?i)(?:samsung|hanwha|wisenet|samsung techwin|samsung.*?version.*?(\d+\.\d+\.\d+))`),
-		"Panasonic": regexp.MustCompile(`(?i)(?:panasonic|wv|bb|blc|network camera|panasonic.*?version.*?(\d+\.\d+\.\d+))`),
-		"Vivotek":   regexp.MustCompile(`(?i)(?:vivotek|fd|sd|ip camera|network camera|vivotek.*?version.*?(\d+\.\d+\.\d+))`),
-		"CP Plus":   regexp.MustCompile(`(?i)(?:cp plus|cpplus|cp-plus|cp_plus|cp plus.*?version.*?(\d+\.\d+\.\d+))`),
-	}
-
-	for brand, pattern := range webPatterns {
-		matches := pattern.FindStringSubmatch(body)
-		if len(matches) > 0 {
-			version := ""
-			if len(matches) > 1 {
-				version = matches[1]
-			}
-			note := "Web interface detected"
-			if version != "" {
-				note += " | Version: " + version
-			}
-			return DetectResult{Brand: brand, Note: note, Version: version}
-		}
-	}
-
-	return DetectResult{Brand: "", Note: "", Version: ""}
-}
+func AnalyzeWebContent(body string) DetectResult { return DetectWithVersion("", body, "") }
 
 // ExtractSoftwareInfo extracts software information from web content
+// Common software version patterns
+var softwarePatterns = map[string]*regexp.Regexp{
+	"firmware":   regexp.MustCompile(`(?i)(?:firmware|fw).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
+	"software":   regexp.MustCompile(`(?i)(?:software|sw).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
+	"version":    regexp.MustCompile(`(?i)(?:version|ver).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
+	"build":      regexp.MustCompile(`(?i)(?:build|bld).*?(\d+\.\d+\.\d+(?:\.\d+)?)`),
+	"release":    regexp.MustCompile(`(?i)(?:release|rel).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
+	"kernel":     regexp.MustCompile(`(?i)(?:kernel|kern).*?(\d+\.\d+\.\d+(?:\.\d+)?)`),
+	"bootloader": regexp.MustCompile(`(?i)(?:bootloader|boot).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
+}
+
 func ExtractSoftwareInfo(body string) map[string]string {
 	info := make(map[string]string)
 
-	// Common software version patterns
-	patterns := map[string]*regexp.Regexp{
-		"firmware":   regexp.MustCompile(`(?i)(?:firmware|fw).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
-		"software":   regexp.MustCompile(`(?i)(?:software|sw).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
-		"version":    regexp.MustCompile(`(?i)(?:version|ver).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
-		"build":      regexp.MustCompile(`(?i)(?:build|bld).*?(\d+\.\d+\.\d+(?:\.\d+)?)`),
-		"release":    regexp.MustCompile(`(?i)(?:release|rel).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
-		"kernel":     regexp.MustCompile(`(?i)(?:kernel|kern).*?(\d+\.\d+\.\d+(?:\.\d+)?)`),
-		"bootloader": regexp.MustCompile(`(?i)(?:bootloader|boot).*?v?(\d+\.\d+\.\d+(?:\.\d+)?)`),
-	}
-
-	for key, pattern := range patterns {
+	for key, pattern := range softwarePatterns {
 		matches := pattern.FindStringSubmatch(body)
 		if len(matches) > 1 {
 			info[key] = matches[1]
@@ -321,25 +170,15 @@ func ExtractSoftwareInfo(body string) map[string]string {
 }
 
 // DetectLoginSystem detects the login system used by the camera
+var genericLogin = regexp.MustCompile(`(?i)(?:login|admin|webadmin|viewer)`)
+
 func DetectLoginSystem(body string) string {
-	loginPatterns := map[string]*regexp.Regexp{
-		"Hikvision": regexp.MustCompile(`(?i)(?:hikvision|hik-connect|ivms|login\.jsp)`),
-		"Dahua":     regexp.MustCompile(`(?i)(?:dahua|dss|smartpss|dmss|login\.html)`),
-		"Axis":      regexp.MustCompile(`(?i)(?:axis|axis-cgi|axis communications)`),
-		"Sony":      regexp.MustCompile(`(?i)(?:sony|ipela|snc)`),
-		"Bosch":     regexp.MustCompile(`(?i)(?:bosch|flexidome|dinion)`),
-		"Samsung":   regexp.MustCompile(`(?i)(?:samsung|hanwha|wisenet)`),
-		"Panasonic": regexp.MustCompile(`(?i)(?:panasonic|wv|bb|blc)`),
-		"Vivotek":   regexp.MustCompile(`(?i)(?:vivotek|fd|sd)`),
-		"Generic":   regexp.MustCompile(`(?i)(?:login|admin|webadmin|viewer)`),
+	if r := DetectWithVersion("", body, ""); r.Brand != "" && r.Brand != "Unknown cam" {
+		return r.Brand
 	}
-
-	for system, pattern := range loginPatterns {
-		if pattern.MatchString(body) {
-			return system
-		}
+	if genericLogin.MatchString(body) {
+		return "Generic"
 	}
-
 	return "Unknown"
 }
 

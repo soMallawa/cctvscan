@@ -16,7 +16,7 @@ type TargetResult struct {
 	Brand        string   `json:"brand,omitempty"`
 	CVEs         []string `json:"cves,omitempty"`
 	CVELinks     []string `json:"cve_links,omitempty"`
-	FoundCred    string   `json:"found_cred,omitempty"`
+	FoundCred    string   `json:"-"`
 	Notes        []string `json:"notes,omitempty"`
 }
 
@@ -36,25 +36,31 @@ func WriteMarkdown(path string, results []TargetResult) error {
 			b.WriteString("Brand: " + r.Brand + "\n\n")
 		}
 		if len(r.CVEs) > 0 {
-			b.WriteString("CVEs:\n")
+			b.WriteString("Vendor-associated advisories (applicability unverified):\n")
 			for i := range r.CVEs {
 				b.WriteString("- " + r.CVEs[i])
-				if i < len(r.CVELinks) { b.WriteString("  (" + r.CVELinks[i] + ")") }
+				if i < len(r.CVELinks) {
+					b.WriteString("  (" + r.CVELinks[i] + ")")
+				}
 				b.WriteString("\n")
 			}
 			b.WriteString("\n")
 		}
 		if len(r.LoginPages) > 0 {
 			b.WriteString("Login pages:\n")
-			for _, u := range r.LoginPages { b.WriteString("- " + u + "\n") }
+			for _, u := range r.LoginPages {
+				b.WriteString("- " + u + "\n")
+			}
 			b.WriteString("\n")
 		}
 		if r.FoundCred != "" {
-			b.WriteString("Default credential found: `" + r.FoundCred + "`\n\n")
+			b.WriteString("Credential verified (value redacted).\n\n")
 		}
 		if len(r.Notes) > 0 {
 			b.WriteString("Notes:\n")
-			for _, n := range r.Notes { b.WriteString("- " + n + "\n") }
+			for _, n := range r.Notes {
+				b.WriteString("- " + n + "\n")
+			}
 			b.WriteString("\n")
 		}
 	}
@@ -64,17 +70,26 @@ func WriteMarkdown(path string, results []TargetResult) error {
 func intsToCSV(in []int) string {
 	var sb strings.Builder
 	for i, v := range in {
-		if i>0 { sb.WriteByte(',') }
+		if i > 0 {
+			sb.WriteByte(',')
+		}
 		sb.WriteString(fmtInt(int64(v)))
 	}
 	return sb.String()
 }
 
-func (tr TargetResult) JSON() []byte { j,_ := json.Marshal(tr); return j }
+func (tr TargetResult) JSON() []byte { j, _ := json.Marshal(tr); return j }
 
 func fmtInt(i int64) string {
-	if i==0 { return "0" }
-	var b [20]byte; n := len(b); for i>0 { n--; b[n]=byte('0'+i%10); i/=10 }
+	if i == 0 {
+		return "0"
+	}
+	var b [20]byte
+	n := len(b)
+	for i > 0 {
+		n--
+		b[n] = byte('0' + i%10)
+		i /= 10
+	}
 	return string(b[n:])
 }
-

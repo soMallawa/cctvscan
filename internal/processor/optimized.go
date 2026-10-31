@@ -2,269 +2,242 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
-	"os"
-	"sync"
-	"time"
-
 	"github.com/postfix/cctvscan/internal/credbrute"
 	"github.com/postfix/cctvscan/internal/fingerprint"
+	"github.com/postfix/cctvscan/internal/httptransport"
 	"github.com/postfix/cctvscan/internal/probe"
 	"github.com/postfix/cctvscan/internal/streams"
+	"github.com/postfix/cctvscan/internal/util"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 )
 
-// HostResult contains all results for a single host
+type StageError struct{ Stage, Message string }
 type HostResult struct {
-	Host        string
-	Ports       []int
-	HTTPPorts   []int
-	RTSPPorts   []int
-	HTTPMeta    probe.HTTPMeta
-	LoginPages  []string
-	RTSPInfo    probe.RTSPInfo
-	ONVIFResult string
-	MJPEGPaths  []string
-	Brand       string
-	BrandNote   string
-	CVEs        []string
-	Credentials string
-	// Enhanced detection results
-	CameraDetection probe.CameraDetectionResult
-	StreamResults   []streams.StreamResult
-	Error           error
+	Host                        string
+	Ports, HTTPPorts, RTSPPorts []int
+	HTTPMeta                    probe.HTTPMeta
+	LoginPages                  []string
+	RTSPInfo                    probe.RTSPInfo
+	ONVIFResult                 string
+	MJPEGPaths                  []string
+	Brand, BrandNote            string
+	CVEs                        []string
+	Credentials                 string `json:"-"`
+	CredentialState             string
+	CameraDetection             probe.CameraDetectionResult
+	CameraDetections            []probe.CameraDetectionResult
+	StreamResults               []streams.StreamResult
+	State                       string
+	Errors                      []StageError
+	Error                       error `json:"-"`
 }
-
-// OptimizedProcessor handles concurrent processing of multiple hosts
+type Options struct {
+	Workers                          int
+	HostTimeout                      time.Duration
+	CheckCredentials, Capture, ONVIF bool
+}
 type OptimizedProcessor struct {
-	debug     bool
-	credsFile string
-	outputDir string
+	debug                bool
+	credsFile, outputDir string
+	Options              Options
 }
 
-// NewOptimizedProcessor creates a new optimized processor
-func NewOptimizedProcessor(debug bool, credsFile, outputDir string) *OptimizedProcessor {
-	return &OptimizedProcessor{
-		debug:     debug,
-		credsFile: credsFile,
-		outputDir: outputDir,
+func NewOptimizedProcessor(debug bool, file, dir string) *OptimizedProcessor {
+	return &OptimizedProcessor{debug: debug, credsFile: file, outputDir: dir, Options: Options{Workers: 5, HostTimeout: 30 * time.Second}}
+}
+
+// One bounded worker pool processes hosts; cancellation marks queued work without
+// launching network activity, retaining a truthful outcome for every discovered host.
+func (p *OptimizedProcessor) ProcessHosts(ctx context.Context, hosts map[string][]int) []HostResult {
+	keys := make([]string, 0, len(hosts))
+	for h := range hosts {
+		keys = append(keys, h)
 	}
-}
-
-// ProcessHosts processes multiple hosts concurrently
-func (p *OptimizedProcessor) ProcessHosts(ctx context.Context, results map[string][]int) []HostResult {
-	var hostResults []HostResult
-	var mu sync.Mutex
+	sort.Strings(keys)
+	out := make([]HostResult, len(keys))
+	jobs := make(chan int)
 	var wg sync.WaitGroup
-
-	// Limit concurrent host processing
-	semaphore := make(chan struct{}, 5)
-
-	for host, ports := range results {
+	workers := min(max(1, p.Options.Workers), len(keys))
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go func(h string, portList []int) {
-			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-
-			result := p.processHost(ctx, h, portList)
-
-			mu.Lock()
-			hostResults = append(hostResults, result)
-			mu.Unlock()
-		}(host, ports)
-	}
-
-	wg.Wait()
-	return hostResults
-}
-
-// processHost processes a single host with all optimizations
-func (p *OptimizedProcessor) processHost(ctx context.Context, host string, ports []int) HostResult {
-	result := HostResult{
-		Host:  host,
-		Ports: ports,
-	}
-
-	if p.debug {
-		log.Printf("DEBUG: Processing host %s with ports %v", host, ports)
-	}
-
-	// Filter ports
-	result.HTTPPorts = probe.FilterHTTPish(ports)
-	result.RTSPPorts = probe.FilterRTSP(ports)
-
-	// Use optimized probe for concurrent processing
-	probeResult := probe.OptimizedProbe(ctx, host, ports)
-	result.HTTPMeta = probeResult.HTTPMeta
-	result.LoginPages = probeResult.LoginPages
-	result.RTSPInfo = probeResult.RTSPInfo
-	result.ONVIFResult = probeResult.ONVIFResult
-	result.MJPEGPaths = probeResult.MJPEGPaths
-
-	// Brand detection with caching
-	result.Brand, result.BrandNote = fingerprint.OptimizedDetect(
-		result.HTTPMeta.Server,
-		result.HTTPMeta.BodySnippet,
-		"",
-	)
-
-	// CVE lookup if brand detected
-	if result.Brand != "" {
-		result.CVEs = fingerprint.OptimizedCVEsForBrand(result.Brand)
-	}
-
-	// Credential brute force if login pages found
-	if len(result.LoginPages) > 0 {
-		if _, err := os.Stat(p.credsFile); !os.IsNotExist(err) {
-			result.Credentials = credbrute.OptimizedBruteForce(
-				ctx, host, result.LoginPages, p.credsFile, 5*time.Second,
-			)
-		}
-	}
-
-	// Enhanced camera detection
-	if len(result.Ports) > 0 {
-		if p.debug {
-			log.Printf("DEBUG: Running enhanced camera detection on %s with ports %v", host, result.Ports)
-		}
-		cameraDetections := probe.DetectCamera(ctx, host, result.Ports)
-		if len(cameraDetections) > 0 {
-			// Use the first detection result (most relevant)
-			result.CameraDetection = cameraDetections[0]
-			if p.debug {
-				log.Printf("DEBUG: Camera detection result: %+v", result.CameraDetection)
-			}
-		} else if p.debug {
-			log.Printf("DEBUG: No camera detections found for %s", host)
-		}
-	}
-
-	// Comprehensive stream detection
-	if len(result.Ports) > 0 {
-		outputDir := p.outputDir + "/streams"
-		if p.debug {
-			log.Printf("DEBUG: Running comprehensive stream detection on %s with ports %v", host, result.Ports)
-		}
-		result.StreamResults = streams.DetectStreams(ctx, host, result.Ports, outputDir)
-		if p.debug {
-			log.Printf("DEBUG: Found %d streams for %s", len(result.StreamResults), host)
-		}
-	}
-
-	// MJPEG stream processing (legacy)
-	if len(result.HTTPPorts) > 0 {
 		go func() {
-			outputDir := p.outputDir + "/snapshots"
-			if p.debug {
-				log.Printf("DEBUG: Saving snapshots to: %s", outputDir)
+			defer wg.Done()
+			for n := range jobs {
+				out[n] = p.processHost(ctx, keys[n], hosts[keys[n]])
 			}
-			streams.TryMJPEG(ctx, host, result.HTTPPorts, outputDir)
 		}()
 	}
-
-	return result
+	for n := range keys {
+		jobs <- n
+	}
+	close(jobs)
+	wg.Wait()
+	return out
 }
-
-// PrintResults prints the results in a formatted way
-func (p *OptimizedProcessor) PrintResults(results []HostResult) {
-	for _, result := range results {
-		fmt.Printf("\n=== Processing %s ===\n", result.Host)
-		fmt.Printf("Open ports: %v\n", result.Ports)
-		fmt.Printf("HTTP ports: %v\n", result.HTTPPorts)
-		fmt.Printf("RTSP ports: %v\n", result.RTSPPorts)
-
-		// HTTP Server info
-		if result.HTTPMeta.Server != "" {
-			fmt.Printf("HTTP Server: %s\n", result.HTTPMeta.Server)
-			if p.debug && result.HTTPMeta.BodySnippet != "" {
-				log.Printf("DEBUG: HTTP body snippet: %s", result.HTTPMeta.BodySnippet)
-			}
-		}
-
-		// Login pages
-		if len(result.LoginPages) > 0 {
-			fmt.Printf("Login pages: %v\n", result.LoginPages)
-		}
-
-		// RTSP info
-		if result.RTSPInfo.Any {
-			fmt.Printf("RTSP Server: %s\n", result.RTSPInfo.Server)
-			fmt.Printf("RTSP Public: %s\n", result.RTSPInfo.Public)
-		}
-
-		// Brand detection
-		if result.Brand != "" {
-			fmt.Printf("Brand: %s", result.Brand)
-			if result.BrandNote != "" {
-				fmt.Printf(" (%s)", result.BrandNote)
-			}
-			fmt.Println()
-
-			// CVEs
-			if len(result.CVEs) > 0 {
-				fmt.Printf("Known CVEs: %v\n", result.CVEs)
-				fmt.Printf("CVE Links: %v\n", fingerprint.OptimizedCVELinks(result.CVEs))
-			}
-		}
-
-		// Credentials
-		if result.Credentials != "" {
-			fmt.Printf("✓ Default credentials found: %s\n", result.Credentials)
-		} else if len(result.LoginPages) > 0 {
-			fmt.Println("✗ No default credentials found")
-		}
-
-		// Enhanced camera detection
-		if result.CameraDetection.IsCamera {
-			fmt.Printf("🎥 Camera Detected: %s\n", result.CameraDetection.Brand)
-			if result.CameraDetection.Model != "" {
-				fmt.Printf("   Model: %s\n", result.CameraDetection.Model)
-			}
-			if result.CameraDetection.ServerHeader != "" {
-				fmt.Printf("   Server: %s\n", result.CameraDetection.ServerHeader)
-			}
-			if len(result.CameraDetection.Indicators) > 0 {
-				fmt.Printf("   Indicators: %v\n", result.CameraDetection.Indicators)
-			}
-			if result.CameraDetection.AuthRequired {
-				fmt.Printf("   Auth Required: %s\n", result.CameraDetection.AuthType)
-			}
-			if len(result.CameraDetection.Endpoints) > 0 {
-				fmt.Printf("   Endpoints: %v\n", result.CameraDetection.Endpoints)
-			}
-		}
-
-		// Stream detection results
-		if len(result.StreamResults) > 0 {
-			fmt.Printf("📺 Streams Found (%d):\n", len(result.StreamResults))
-			for _, stream := range result.StreamResults {
-				fmt.Printf("   %s: %s (%s)\n", stream.Type, stream.URL, stream.ContentType)
-			}
-		}
-
-		// MJPEG streams (legacy)
-		if len(result.HTTPPorts) > 0 {
-			fmt.Println("Checking for MJPEG streams...")
-		}
-
-		// ONVIF
-		if result.ONVIFResult != "" {
-			fmt.Printf("ONVIF: %s\n", result.ONVIFResult)
-		}
-
-		fmt.Println()
+func (r *HostResult) fail(stage string, e error) {
+	if e == nil {
+		return
+	}
+	r.Error = errors.Join(r.Error, e)
+	msg := "operation failed"
+	switch {
+	case errors.Is(e, context.Canceled):
+		msg = "canceled"
+		r.State = "canceled"
+	case errors.Is(e, context.DeadlineExceeded):
+		msg = "deadline exceeded"
+		r.State = "canceled"
+	case errors.Is(e, httptransport.ErrProxyAuth):
+		msg = "proxy authentication required"
+	case errors.Is(e, httptransport.ErrProxyConnect):
+		msg = "proxy connection failed"
+	case errors.Is(e, httptransport.ErrProxiedRequest):
+		msg = "request through proxy failed"
+	}
+	r.Errors = append(r.Errors, StageError{stage, msg})
+	if r.State != "canceled" {
+		r.State = "inconclusive"
 	}
 }
-
-// GetPerformanceStats returns performance statistics
+func (p *OptimizedProcessor) processHost(parent context.Context, host string, ports []int) HostResult {
+	ctx := parent
+	cancel := func() {}
+	if p.Options.HostTimeout > 0 {
+		ctx, cancel = context.WithTimeout(parent, p.Options.HostTimeout)
+	}
+	defer cancel()
+	r := HostResult{Host: host, Ports: append([]int(nil), ports...), State: "complete", CredentialState: "not_tested"}
+	sort.Ints(r.Ports)
+	r.HTTPPorts = probe.FilterHTTPish(r.Ports)
+	r.RTSPPorts = probe.FilterRTSP(r.Ports)
+	if ctx.Err() != nil {
+		r.fail("host", ctx.Err())
+		return r
+	}
+	pr := probe.ProbeWithOptions(ctx, host, r.Ports, p.Options.ONVIF)
+	r.HTTPMeta = pr.HTTPMeta
+	r.RTSPInfo = pr.RTSPInfo
+	if pr.RTSPInfo.Error != nil {
+		r.fail("rtsp_probe", pr.RTSPInfo.Error)
+	}
+	r.ONVIFResult = pr.ONVIFResult
+	r.LoginPages = pr.LoginPages
+	r.fail("http_metadata", pr.HTTPMeta.Error)
+	r.Brand, r.BrandNote = fingerprint.OptimizedDetect(pr.HTTPMeta.Server, pr.HTTPMeta.BodySnippet, pr.RTSPInfo.Server)
+	best := -1
+	for _, e := range pr.HTTPMeta.Endpoints {
+		if e.State == "failed" {
+			continue
+		}
+		d := probe.CameraFromEndpoint(e)
+		r.CameraDetections = append(r.CameraDetections, d)
+		b, n := fingerprint.OptimizedDetect(e.Server, e.BodySnippet, "")
+		if b != "" && b != "Unknown cam" && (r.Brand == "" || r.Brand == "Unknown cam") {
+			r.Brand = b
+			r.BrandNote = n
+		}
+		score := 0
+		if d.IsCamera {
+			score = 1
+		}
+		if d.Brand != "" && d.Brand != "Unknown cam" {
+			score += 2
+		}
+		if score > best {
+			r.CameraDetection = d
+			best = score
+		}
+	}
+	r.CVEs = fingerprint.OptimizedCVEsForBrand(r.Brand)
+	if ctx.Err() != nil {
+		r.fail("host", ctx.Err())
+		return r
+	}
+	if p.Options.CheckCredentials {
+		pages, discoveryErr := probe.FindLoginPagesDetailed(ctx, host, r.HTTPPorts)
+		r.LoginPages = util.Uniq(append(r.LoginPages, pages...))
+		cr, e := credbrute.CheckCredentials(ctx, r.LoginPages, p.credsFile, 5*time.Second)
+		r.Credentials = cr.Found
+		r.CredentialState = cr.State
+		if discoveryErr != nil && cr.State != "found" && cr.State != "canceled" {
+			r.CredentialState = "inconclusive"
+		}
+		r.fail("credentials", errors.Join(discoveryErr, e))
+	}
+	// Deep path discovery is reserved for likely camera hosts. Non-HTTP protocol
+	// paths remain labeled candidates, never fabricated success or playback proof.
+	selected := append([]int(nil), r.RTSPPorts...)
+	if r.CameraDetection.IsCamera || r.RTSPInfo.Any || r.ONVIFResult != "" {
+		selected = append(selected, r.HTTPPorts...)
+	}
+	for _, port := range r.Ports {
+		if (port >= 1935 && port <= 1939) || (port >= 1755 && port <= 1760) {
+			selected = append(selected, port)
+		}
+	}
+	sr, e := streams.DetectStreamsDetailed(ctx, host, selected)
+	r.StreamResults = sr
+	r.fail("media_discovery", e)
+	if p.Options.Capture {
+		client := httptransport.Client(3 * time.Second)
+		for i := range r.StreamResults {
+			s := &r.StreamResults[i]
+			if s.Verified && (s.Type == streams.StreamMJPEG || s.Type == streams.StreamSnapshot) {
+				path, e := streams.SaveSnapshot(ctx, client, *s, filepath.Join(p.outputDir, "snapshots"))
+				s.SavedPath = path
+				r.fail("capture", e)
+			}
+		}
+	}
+	if ctx.Err() != nil {
+		r.fail("host", ctx.Err())
+	}
+	return r
+}
+func (p *OptimizedProcessor) PrintResults(results []HostResult) {
+	for _, r := range results {
+		fmt.Printf("\n=== %s [%s] ===\nOpen ports: %v\n", r.Host, r.State, r.Ports)
+		for _, e := range r.HTTPMeta.Endpoints {
+			fmt.Printf("HTTP %s: %s status=%d server=%q\n", e.URL, e.State, e.StatusCode, e.Server)
+		}
+		if r.RTSPInfo.Any {
+			fmt.Printf("RTSP response: status=%d auth_required=%t server=%q (not playback proof)\n", r.RTSPInfo.Status, r.RTSPInfo.AuthRequired, r.RTSPInfo.Server)
+		}
+		if r.Brand != "" {
+			fmt.Printf("Vendor hint: %s %s\n", r.Brand, r.BrandNote)
+		}
+		if len(r.CVEs) > 0 {
+			fmt.Printf("Vendor-associated advisories (model/firmware applicability NOT verified): %s\n", strings.Join(fingerprint.OptimizedCVELinks(r.CVEs), ", "))
+		}
+		if r.CameraDetection.IsCamera {
+			fmt.Printf("Likely camera: %s; evidence=%v\n", r.CameraDetection.Brand, r.CameraDetection.Indicators)
+		}
+		fmt.Printf("Credentials: %s", r.CredentialState)
+		if r.Credentials != "" {
+			fmt.Print(" (value redacted)")
+		}
+		fmt.Println()
+		for _, s := range r.StreamResults {
+			fmt.Printf("Media %s [%s]: %s; %s\n", s.Type, s.State, s.URL, s.Evidence)
+			if s.SavedPath != "" {
+				fmt.Printf("Saved image: %s\n", s.SavedPath)
+			}
+		}
+		if r.ONVIFResult != "" {
+			fmt.Printf("ONVIF: %s\n", r.ONVIFResult)
+		}
+		for _, e := range r.Errors {
+			fmt.Printf("Incomplete %s: %s\n", e.Stage, e.Message)
+		}
+	}
+}
 func GetPerformanceStats() map[string]interface{} {
-	stats := make(map[string]interface{})
-
-	// Brand cache stats
-	totalEntries, cveEntries := fingerprint.GetCacheStats()
-	stats["brand_cache_entries"] = totalEntries
-	stats["cve_cache_entries"] = cveEntries
-
-	return stats
+	n, c := fingerprint.GetCacheStats()
+	return map[string]interface{}{"brand_cache_entries": n, "cve_cache_entries": c}
 }

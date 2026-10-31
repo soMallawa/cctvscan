@@ -1,6 +1,16 @@
 # If you prefer the allow list template instead of the deny list, see community template:
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
 #
+# Generated local executable and private runtime output
+/cctvscan
+/scan-*.json
+/.scan-*.tmp
+/snapshots/
+/streams/
+/results/
+/qa/integration-receipts.json
+**/__pycache__/
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -30,3 +40,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+/bin/
+
+__pycache__/
+*.py[cod]

@@ -1,99 +1,138 @@
-// Package targets handles target specification and expansion for network scanning.
-// It supports reading targets from files, command-line arguments, and CIDR expansion.
+// Package targets validates compact IPv4 targets and offers bounded, cancellable
+// expansion for legacy callers. The CLI passes compact ranges to scan backends.
 package targets
 
 import (
 	"bufio"
+	"context"
 	"fmt"
-	"net"
+	"net/netip"
 	"os"
+	"sort"
 	"strings"
-
-	"github.com/postfix/cctvscan/internal/util"
 )
 
-// FromArgsOrFile processes targets from command-line arguments and/or a file.
-// It reads targets from the specified file (if provided), combines them with args,
-// expands CIDR notations to individual IPs, and validates all targets.
-// Returns a slice of unique target IP addresses or an error if any target is invalid.
-func FromArgsOrFile(args []string, file string) ([]string, error) {
-	lines := make([]string, 0, len(args)+10)
-	if file != "" {
-		f, err := os.Open(file)
-		if err != nil { return nil, err }
-		defer f.Close()
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			s := strings.TrimSpace(sc.Text())
-			if s == "" || strings.HasPrefix(s, "#") { continue }
-			lines = append(lines, s)
+const MaxExpandedTargets = 1 << 20
+
+func Normalize(ctx context.Context, args []string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	add := func(raw string) error {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if err := sc.Err(); err != nil { return nil, err }
-	}
-	lines = append(lines, args...)
-	// Pre-allocate output slice with estimated capacity
-	out := make([]string, 0, len(lines)*4)
-	for _, t := range lines {
-		if _, ipnet, err := net.ParseCIDR(t); err == nil {
-			for ip := ipnet.IP.Mask(ipnet.Mask); ipnet.Contains(ip); incIP(ip) {
-				out = append(out, ip.String())
+		raw = strings.TrimSpace(raw)
+		if raw == "" || strings.HasPrefix(raw, "#") {
+			return nil
+		}
+		var canonical string
+		if p, err := netip.ParsePrefix(raw); err == nil {
+			if !p.Addr().Is4() {
+				return fmt.Errorf("IPv6 scanning is not supported: %q", raw)
 			}
-			continue
+			canonical = p.Masked().String()
+		} else if a, err := netip.ParseAddr(raw); err == nil && a.Unmap().Is4() {
+			canonical = a.Unmap().String()
+		} else {
+			return fmt.Errorf("invalid IPv4 target %q", raw)
 		}
-		if ip := net.ParseIP(t); ip != nil {
-			out = append(out, ip.String())
-			continue
+		if !seen[canonical] {
+			seen[canonical] = true
+			out = append(out, canonical)
 		}
-		return nil, fmt.Errorf("invalid target %q", t)
+		return nil
 	}
-	return util.Uniq(out), nil
-}
-
-// incIP increments an IP address by one.
-// It handles carry-over between octets correctly for proper IP address arithmetic.
-func incIP(ip net.IP) {
-	for j := len(ip)-1; j>=0; j-- {
-		ip[j]++
-		if ip[j] != 0 { break }
-	}
-}
-
-// Expand processes targets from command-line arguments, handling both
-// individual IPs and files containing target lists.
-func Expand(args []string) ([]string, error) {
-	var targets []string
-	
 	for _, arg := range args {
-		// Check if argument is a file
-		if _, err := os.Stat(arg); err == nil {
-			// Read targets from file
-			f, err := os.Open(arg)
-			if err != nil {
-				return nil, fmt.Errorf("failed to open file %s: %v", arg, err)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if info, err := os.Stat(arg); err == nil {
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("target file is not regular: %s", arg)
 			}
-			defer f.Close()
-			
-			scanner := bufio.NewScanner(f)
-			for scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
-				if line != "" && !strings.HasPrefix(line, "#") {
-					targets = append(targets, line)
+			err = func() error {
+				f, e := os.Open(arg)
+				if e != nil {
+					return e
 				}
-			}
-			if err := scanner.Err(); err != nil {
-				return nil, fmt.Errorf("error reading file %s: %v", arg, err)
+				defer f.Close()
+				sc := bufio.NewScanner(f)
+				sc.Buffer(make([]byte, 4096), 1024*1024)
+				for sc.Scan() {
+					if e = add(sc.Text()); e != nil {
+						return e
+					}
+				}
+				return sc.Err()
+			}()
+			if err != nil {
+				return nil, err
 			}
 		} else {
-			// Treat as direct target
-			targets = append(targets, arg)
+			if err = add(arg); err != nil {
+				return nil, err
+			}
 		}
 	}
-	
-	// Use FromArgsOrFile to handle CIDR expansion and validation
-	return FromArgsOrFile(targets, "")
+	sort.Strings(out)
+	return out, nil
 }
 
+// Count returns an upper bound: overlapping prefixes are not silently sampled.
+func Count(targets []string) uint64 {
+	var n uint64
+	for _, s := range targets {
+		if p, e := netip.ParsePrefix(s); e == nil && p.Addr().Is4() {
+			n += uint64(1) << uint(32-p.Bits())
+		} else {
+			n++
+		}
+	}
+	return n
+}
+func ExpandContext(ctx context.Context, args []string) ([]string, error) {
+	compact, err := Normalize(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	n := Count(compact)
+	if n > MaxExpandedTargets {
+		return nil, fmt.Errorf("expansion exceeds %d addresses; use compact ranges", MaxExpandedTargets)
+	}
+	out := make([]string, 0, int(n))
+	seen := make(map[string]bool, int(n))
+	appendAddr := func(a netip.Addr) {
+		s := a.String()
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range compact {
+		if p, e := netip.ParsePrefix(s); e == nil {
+			for a := p.Masked().Addr(); a.IsValid() && p.Contains(a); a = a.Next() {
+				if err = ctx.Err(); err != nil {
+					return nil, err
+				}
+				appendAddr(a)
+			}
+		} else {
+			if err = ctx.Err(); err != nil {
+				return nil, err
+			}
+			a, _ := netip.ParseAddr(s)
+			appendAddr(a)
+		}
+	}
+	return out, nil
+}
+func Expand(args []string) ([]string, error) { return ExpandContext(context.Background(), args) }
+func FromArgsOrFile(args []string, file string) ([]string, error) {
+	if file != "" {
+		args = append(append([]string{}, args...), file)
+	}
+	return Expand(args)
+}
 
-
-
-
+// Kept for existing package-local callers; iterators use netip.Addr.Next, whose
+// invalid wrap sentinel makes /0 termination explicit.

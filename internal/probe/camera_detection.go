@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/postfix/cctvscan/internal/fingerprint"
 	"github.com/postfix/cctvscan/internal/httptransport"
 	"io"
 	"net"
@@ -64,10 +65,7 @@ var CameraContentTypes = []string{
 }
 
 // Camera keywords for content analysis
-var CameraKeywords = []string{
-	"camera", "webcam", "surveillance", "stream", "video", "snapshot",
-	"dvr", "nvr", "recorder", "cctv", "monitor", "security",
-}
+var CameraKeywords = []string{"ip camera", "network camera", "webcam", "surveillance camera", "cctv", "dvr", "nvr"}
 
 // DVR/NVR specific keywords
 var DVRNVRKeywords = []string{
@@ -110,6 +108,20 @@ func DetectCamera(ctx context.Context, host string, ports []int) []CameraDetecti
 	return results
 }
 
+// CameraFromEndpoint reuses already-read metadata instead of re-fetching roots.
+func CameraFromEndpoint(e HTTPEndpoint) CameraDetectionResult {
+	r := CameraDetectionResult{ServerHeader: e.Server, ContentType: e.ContentType, Status: e.StatusCode, AuthRequired: e.StatusCode == 401 || e.StatusCode == 403 || e.Auth != "", AuthType: e.Auth}
+	if b := detectBrandFromServer(e.Server); b != "" {
+		r.Brand = b
+		r.IsCamera = true
+		r.Indicators = append(r.Indicators, "Explicit vendor header")
+	}
+	if e.BodySnippet != "" {
+		analyzeContent(&r, e.BodySnippet)
+	}
+	return r
+}
+
 // analyzePort analyzes a specific port for camera indicators
 func analyzePort(ctx context.Context, client *http.Client, baseURL string) CameraDetectionResult {
 	result := CameraDetectionResult{
@@ -120,7 +132,7 @@ func analyzePort(ctx context.Context, client *http.Client, baseURL string) Camer
 	// Check main page
 	req, _ := http.NewRequestWithContext(ctx, "GET", baseURL, nil)
 	req.Header.Set("User-Agent", "CCTVTool/1.0")
-	resp, err := client.Do(req)
+	resp, err := httptransport.Do(client, req)
 	if err != nil {
 		return result
 	}
@@ -138,10 +150,7 @@ func analyzePort(ctx context.Context, client *http.Client, baseURL string) Camer
 	}
 
 	// Check content type
-	if isCameraContentType(result.ContentType) {
-		result.IsCamera = true
-		result.Indicators = append(result.Indicators, "Camera content type")
-	}
+	// MIME alone (even an image/logo) is not camera evidence.
 
 	// Check authentication
 	if resp.StatusCode == 401 {
@@ -172,39 +181,14 @@ func analyzePort(ctx context.Context, client *http.Client, baseURL string) Camer
 
 // detectBrandFromServer detects camera brand from server header
 func detectBrandFromServer(serverHeader string) string {
-	serverLower := strings.ToLower(serverHeader)
-
-	for brand, keywords := range CameraServers {
-		if brand == "generic" {
-			continue // Skip generic, check others first
-		}
-		for _, keyword := range keywords {
-			if strings.Contains(serverLower, keyword) {
-				return brand
-			}
-		}
+	r := fingerprint.DetectWithVersion(serverHeader, "", "")
+	if r.Brand == "Unknown cam" {
+		return ""
 	}
-
-	// Check generic keywords last
-	for _, keyword := range CameraServers["generic"] {
-		if strings.Contains(serverLower, keyword) {
-			return "generic"
-		}
-	}
-
-	return ""
+	return r.Brand
 }
 
 // isCameraContentType checks if content type indicates camera
-func isCameraContentType(contentType string) bool {
-	contentTypeLower := strings.ToLower(contentType)
-	for _, ct := range CameraContentTypes {
-		if strings.Contains(contentTypeLower, ct) {
-			return true
-		}
-	}
-	return false
-}
 
 // analyzeContent analyzes response content for camera indicators
 func analyzeContent(result *CameraDetectionResult, content string) {
@@ -223,21 +207,11 @@ func analyzeContent(result *CameraDetectionResult, content string) {
 		result.Indicators = append(result.Indicators, "Camera keywords in content")
 	}
 
-	// Check for specific brand indicators
-	for brand, keywords := range CameraServers {
-		if brand == "generic" {
-			continue
-		}
-		for _, keyword := range keywords {
-			if strings.Contains(contentLower, keyword) {
-				if result.Brand == "" {
-					result.Brand = brand
-				}
-				result.IsCamera = true
-				result.Indicators = append(result.Indicators, fmt.Sprintf("%s brand indicator", brand))
-				break
-			}
-		}
+	r := fingerprint.DetectWithVersion("", content, "")
+	if r.Brand != "" && r.Brand != "Unknown cam" {
+		result.Brand = r.Brand
+		result.IsCamera = true
+		result.Indicators = append(result.Indicators, "Explicit vendor evidence")
 	}
 
 	// Extract page title
@@ -258,8 +232,10 @@ func analyzeContent(result *CameraDetectionResult, content string) {
 }
 
 // extractPageTitle extracts page title from HTML content
+var pageTitleRE = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+
 func extractPageTitle(content string) string {
-	re := regexp.MustCompile(`<title[^>]*>(.*?)</title>`)
+	re := pageTitleRE
 	matches := re.FindStringSubmatch(content)
 	if len(matches) > 1 {
 		return strings.TrimSpace(matches[1])
@@ -268,11 +244,13 @@ func extractPageTitle(content string) string {
 }
 
 // extractFormFields extracts form field names from HTML content
+var formInputRE = regexp.MustCompile(`(?is)<input[^>]*name=["']([^"']*)["'][^>]*>`)
+
 func extractFormFields(content string) []string {
 	var fields []string
 
 	// Look for input fields
-	inputRe := regexp.MustCompile(`<input[^>]*name=["']([^"']*)["'][^>]*>`)
+	inputRe := formInputRE
 	matches := inputRe.FindAllStringSubmatch(content, -1)
 	for _, match := range matches {
 		if len(match) > 1 {
@@ -317,7 +295,7 @@ func checkCameraEndpoints(ctx context.Context, client *http.Client, baseURL stri
 		url := baseURL + endpoint
 		req, _ := http.NewRequestWithContext(ctx, "HEAD", url, nil)
 		req.Header.Set("User-Agent", "CCTVTool/1.0")
-		resp, err := client.Do(req)
+		resp, err := httptransport.Do(client, req)
 		if err != nil {
 			continue
 		}

@@ -37,6 +37,7 @@ func Configure(raw string) error {
 			}
 		}
 	}
+	resetClients()
 	if proxy == nil {
 		policy.Lock()
 		policy.proxy = nil

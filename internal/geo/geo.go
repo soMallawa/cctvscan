@@ -29,7 +29,11 @@ func GetIPInfo(ip string) (*IPInfo, error) {
 	}
 
 	url := fmt.Sprintf("https://ipinfo.io/%s/json", ip)
-	resp, err := client.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httptransport.Do(client, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch IP info: %w", err)
 	}

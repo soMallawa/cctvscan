@@ -13,9 +13,20 @@ import (
 )
 
 type RTSPInfo struct {
-	Any    bool
-	Server string
-	Public string
+	Status       int
+	AuthRequired bool
+	Error        error `json:"-"`
+	Any          bool
+	Server       string
+	Public       string
+}
+
+func IsRTSPPort(port int) bool {
+	switch port {
+	case 554, 8554, 10554, 1554, 2554, 3554, 4554, 5554, 6554, 7554, 9554:
+		return true
+	}
+	return false
 }
 
 func FilterRTSP(ports []int) []int {
@@ -32,37 +43,60 @@ func FilterRTSP(ports []int) []int {
 func ProbeRTSP(ctx context.Context, host string, ports []int) RTSPInfo {
 	var info RTSPInfo
 	for _, p := range ports {
+		if err := ctx.Err(); err != nil {
+			info.Error = err
+			break
+		}
 		addr := net.JoinHostPort(host, util.Itoa(p))
-		c, err := net.DialTimeout("tcp", addr, 1200*time.Millisecond)
+		c, err := dialSocket(ctx, "tcp", addr, 1500*time.Millisecond)
 		if err != nil {
+			info.Error = err
 			continue
 		}
-		_ = c.SetDeadline(time.Now().Add(1500 * time.Millisecond))
 		fmt.Fprintf(c, "OPTIONS rtsp://%s RTSP/1.0\r\nCSeq: 1\r\n\r\n", addr)
-		br := bufio.NewReader(c)
-		status, _ := br.ReadString('\n')
-		if strings.HasPrefix(status, "RTSP/1.0 200") {
-			info.Any = true
-			// read headers
-			for {
-				line, _ := br.ReadString('\n')
-				line = strings.TrimSpace(line)
-				if line == "" {
-					break
-				}
-				l := strings.ToLower(line)
-				if strings.HasPrefix(l, "server:") && info.Server == "" {
-					info.Server = strings.TrimSpace(line[7:])
-				}
-				if strings.HasPrefix(l, "public:") && info.Public == "" {
-					info.Public = strings.TrimSpace(line[7:])
-				}
+		br := bufio.NewReader(io.LimitReader(c, 16*1024))
+		status, err := br.ReadString('\n')
+		if err != nil {
+			c.Close()
+			info.Error = err
+			continue
+		}
+		fields := strings.Fields(status)
+		if len(fields) < 2 || fields[0] != "RTSP/1.0" {
+			c.Close()
+			continue
+		}
+		code := util.Atoi(fields[1])
+		if code < 100 || code > 599 {
+			c.Close()
+			continue
+		}
+		info.Any = true
+		info.Status = code
+		info.AuthRequired = code == 401 || code == 403
+		for {
+			line, err := br.ReadString('\n')
+			line = strings.TrimSpace(line)
+			if line == "" || err != nil {
+				break
+			}
+			key, val, ok := strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(key) {
+			case "server":
+				info.Server = strings.TrimSpace(val)
+			case "public":
+				info.Public = strings.TrimSpace(val)
 			}
 		}
 		c.Close()
-		if info.Any {
-			break
-		}
+		info.Error = nil
+		break
+	}
+	if ctx.Err() != nil {
+		info.Error = ctx.Err()
 	}
 	return info
 }
@@ -82,13 +116,11 @@ var RTSPCommands = []string{
 // ProbeRTSPDescribe performs DESCRIBE request to validate RTSP streams
 func ProbeRTSPDescribe(ctx context.Context, host string, port int, path string) (int, bool, error) {
 	addr := net.JoinHostPort(host, util.Itoa(port))
-	c, err := net.DialTimeout("tcp", addr, 1000*time.Millisecond)
+	c, err := dialSocket(ctx, "tcp", addr, 2*time.Second)
 	if err != nil {
 		return -1, false, err
 	}
 	defer c.Close()
-
-	_ = c.SetDeadline(time.Now().Add(2000 * time.Millisecond))
 
 	url := "rtsp://" + addr + path
 	fmt.Fprintf(c, "DESCRIBE %s RTSP/1.0\r\nCSeq: 2\r\nUser-Agent: CCTVScan/1.0\r\nAccept: application/sdp\r\n\r\n", url)

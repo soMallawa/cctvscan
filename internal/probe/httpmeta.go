@@ -2,20 +2,33 @@ package probe
 
 import (
 	"context"
-	"crypto/tls"
+	"errors"
+	"github.com/postfix/cctvscan/internal/fingerprint"
 	"github.com/postfix/cctvscan/internal/httptransport"
 	"io"
 	"net"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/postfix/cctvscan/internal/util"
 )
 
+type HTTPEndpoint struct {
+	Port                           int
+	URL, Server, ContentType, Auth string
+	StatusCode                     int
+	State, Error                   string
+	BodySnippet                    string `json:"-"`
+}
 type HTTPMeta struct {
-	Server      string
-	BodySnippet string
+	Endpoints        []HTTPEndpoint
+	State, ErrorText string
+	Error            error `json:"-"`
+	Server           string
+	BodySnippet      string `json:"-"`
 }
 
 // CameraPorts contains the default set of common camera-related ports (79 ports)
@@ -162,74 +175,128 @@ func FilterHTTPish(ports []int) []int {
 }
 
 func ProbeHTTPMeta(ctx context.Context, host string, ports []int) HTTPMeta {
-	meta := HTTPMeta{}
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-		Transport: httptransport.NewTransport(&http.Transport{
-			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
-			DisableKeepAlives: true,
-			DialContext:       (&net.Dialer{Timeout: 1200 * time.Millisecond}).DialContext,
-		}),
-	}
+	meta := HTTPMeta{State: "not_applicable"}
+	client := httptransport.Client(2 * time.Second)
+	var errs []error
 	for _, p := range ports {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
 		scheme := "http"
 		if isHTTPS(p) {
 			scheme = "https"
 		}
-		url := scheme + "://" + net.JoinHostPort(host, util.Itoa(p)) + "/"
-		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-		req.Header.Set("User-Agent", "CCTVTool/1.0")
-		resp, err := client.Do(req)
+		u := scheme + "://" + net.JoinHostPort(host, util.Itoa(p)) + "/"
+		e := HTTPEndpoint{Port: p, URL: u}
+		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "CCTVScan/1.0")
+		}
+		var resp *http.Response
+		if err == nil {
+			resp, err = httptransport.Do(client, req)
+		}
 		if err != nil {
-			continue
+			e.State = "failed"
+			e.Error = "HTTP request failed"
+			errs = append(errs, err)
+		} else {
+			e.StatusCode = resp.StatusCode
+			e.Server = resp.Header.Get("Server")
+			e.ContentType = resp.Header.Get("Content-Type")
+			e.Auth = resp.Header.Get("WWW-Authenticate")
+			data, readErr := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			resp.Body.Close()
+			e.BodySnippet = string(data)
+			e.State = "responded"
+			if readErr != nil {
+				e.State = "partial"
+				e.Error = "HTTP body read failed"
+				errs = append(errs, readErr)
+			}
+			if meta.Server == "" || fingerprint.DetectWithVersion(e.Server, e.BodySnippet, "").Brand != "" {
+				meta.Server = e.Server
+			}
+			if len(meta.BodySnippet) < 8192 {
+				meta.BodySnippet += e.BodySnippet + "\n"
+				if len(meta.BodySnippet) > 8192 {
+					meta.BodySnippet = meta.BodySnippet[:8192]
+				}
+			}
 		}
-		if meta.Server == "" {
-			meta.Server = resp.Header.Get("Server")
+		meta.Endpoints = append(meta.Endpoints, e)
+	}
+	if len(ports) > 0 {
+		meta.State = "responded"
+		if len(meta.Endpoints) == 0 {
+			meta.State = "failed"
 		}
-		if meta.BodySnippet == "" {
-			b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-			meta.BodySnippet = strings.ToLower(string(b))
+	}
+	meta.Error = errors.Join(errs...)
+	if meta.Error != nil {
+		meta.State = "partial"
+		meta.ErrorText = "one or more HTTP probes failed"
+		allFailed := true
+		for _, e := range meta.Endpoints {
+			if e.State != "failed" {
+				allFailed = false
+			}
 		}
-		resp.Body.Close()
-		if meta.Server != "" && meta.BodySnippet != "" {
-			break
+		if allFailed {
+			meta.State = "failed"
 		}
 	}
 	return meta
 }
 
+var passwordInputRE = regexp.MustCompile(`(?is)<input[^>]*type\s*=\s*["']?password(?:["'\s>])`)
+
+func loginEvidence(status int, auth, body string) bool {
+	return status == 401 || status == 403 || auth != "" || (status == 200 && passwordInputRE.MatchString(body))
+}
 func FindLoginPages(ctx context.Context, host string, ports []int) []string {
-	paths := []string{"/", "/login", "/admin", "/viewer", "/webadmin", "/index.html"}
-	client := &http.Client{
-		Timeout: 1500 * time.Millisecond,
-		Transport: httptransport.NewTransport(&http.Transport{
-			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
-			DisableKeepAlives: true,
-		}),
-	}
+	pages, _ := FindLoginPagesDetailed(ctx, host, ports)
+	return pages
+}
+
+// FindLoginPagesDetailed retains positive evidence even when other discovery
+// requests fail. Callers requesting discovery must report its partial failures.
+func FindLoginPagesDetailed(ctx context.Context, host string, ports []int) ([]string, error) {
+	client := httptransport.Client(1500 * time.Millisecond)
 	var out []string
+	var errs []error
 	for _, p := range ports {
 		scheme := "http"
 		if isHTTPS(p) {
 			scheme = "https"
 		}
 		base := scheme + "://" + net.JoinHostPort(host, util.Itoa(p))
-		for _, path := range paths {
-			req, _ := http.NewRequestWithContext(ctx, "HEAD", base+path, nil)
-			resp, err := client.Do(req)
+		for _, path := range []string{"/", "/login", "/admin", "/viewer", "/webadmin", "/index.html"} {
+			if err := ctx.Err(); err != nil {
+				return util.Uniq(out), errors.Join(append(errs, err)...)
+			}
+			req, err := http.NewRequestWithContext(ctx, "GET", base+path, nil)
 			if err != nil {
+				errs = append(errs, err)
 				continue
 			}
-			resp.Body.Close()
-			if resp.StatusCode == 200 {
-				out = append(out, base+path)
+			resp, err := httptransport.Do(client, req)
+			if err != nil {
+				errs = append(errs, err)
+				continue
 			}
-			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.Header.Get("WWW-Authenticate") != "" {
+			data, readErr := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			resp.Body.Close()
+			if readErr != nil {
+				errs = append(errs, readErr)
+			}
+			if loginEvidence(resp.StatusCode, resp.Header.Get("WWW-Authenticate"), string(data)) {
 				out = append(out, base+path)
 			}
 		}
 	}
-	return util.Uniq(out)
+	return util.Uniq(out), errors.Join(errs...)
 }
 
 func isHTTPS(p int) bool {
@@ -247,7 +314,7 @@ func isHTTPLikePort(p int) bool {
 		return false
 	case 1935, 1936, 1937, 1938, 1939: // RTMP
 		return false
-	case 3702, 37777: // ONVIF discovery + proprietary DVR
+	case 1755, 1756, 1757, 1758, 1759, 1760, 3702, 37777: // ONVIF discovery + proprietary DVR
 		return false
 	}
 	// all others (web/http-like) → keep
@@ -295,6 +362,8 @@ func ComprehensiveCameraPortsString() string {
 
 // intSliceToString converts a slice of integers to a comma-separated string
 func intSliceToString(ports []int) string {
+	ports = append([]int(nil), ports...)
+	sort.Ints(ports)
 	if len(ports) == 0 {
 		return ""
 	}
