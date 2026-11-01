@@ -1,0 +1,144 @@
+name: cctvscan-console
+x-app: &app
+  image: ${CCTVSCAN_IMAGE:-cctvscan-console:local}
+  build: .
+  user: "${CCTVSCAN_UID:-1000}:${CCTVSCAN_GID:-1000}"
+  read_only: true
+  init: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "5m", max-file: "2"}
+  environment: &env
+    CCTVSCAN_DATABASE_URL_FILE: /run/secrets/database-url
+    CCTVSCAN_SECRET_KEY_FILE: /run/secrets/key.bin
+  volumes: &mounts
+    - ${CCTVSCAN_SECRETS_DIR:-./deploy/secrets}/key.bin:/run/secrets/key.bin:ro
+    - ${CCTVSCAN_SECRETS_DIR:-./deploy/secrets}/database-url:/run/secrets/database-url:ro
+    - pg_socket:/var/run/postgresql:ro
+services:
+  init:
+    image: ${CCTVSCAN_IMAGE:-cctvscan-console:local}
+    user: "0:0"
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 24m
+    memswap_limit: 24m
+    cpus: 0.25
+    pids_limit: 16
+    environment:
+      TARGET_UID: ${CCTVSCAN_UID:-1000}
+      TARGET_GID: ${CCTVSCAN_GID:-1000}
+    command: [sh, -ec, 'if [ "$$(stat -c %u /var/lib/cctvscan)" != "$$TARGET_UID" ]; then chown -R "$$TARGET_UID:$$TARGET_GID" /var/lib/cctvscan; fi; chmod 700 /var/lib/cctvscan /var/lib/cctvscan/jobs']
+    volumes: [work:/var/lib/cctvscan]
+  db:
+    image: postgres:17-alpine
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    mem_limit: ${CCTVSCAN_DB_MEMORY:-128m}
+    memswap_limit: ${CCTVSCAN_DB_MEMORY:-128m}
+    cpus: 0.5
+    pids_limit: 80
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cctvscan
+      POSTGRES_DB: cctvscan
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+      POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - pg_socket:/var/run/postgresql
+      - ${CCTVSCAN_SECRETS_DIR:-./deploy/secrets}/db-password:/run/secrets/db-password:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h /var/run/postgresql -U cctvscan -d cctvscan"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+  api:
+    <<: *app
+    command: [cctvscan-server]
+    mem_limit: ${CCTVSCAN_API_MEMORY:-96m}
+    memswap_limit: ${CCTVSCAN_API_MEMORY:-96m}
+    cpus: 0.5
+    pids_limit: 60
+    ports: ["127.0.0.1:${CCTVSCAN_PORT:-14910}:8080"]
+    environment:
+      <<: *env
+      CCTVSCAN_LISTEN_ADDR: 127.0.0.1:14904
+      CCTVSCAN_AUTH_MODE: ${CCTVSCAN_AUTH_MODE:-access}
+      CCTVSCAN_ACCESS_ISSUER: ${CCTVSCAN_ACCESS_ISSUER:-}
+      CCTVSCAN_ACCESS_AUDIENCE: ${CCTVSCAN_ACCESS_AUDIENCE:-}
+      CCTVSCAN_PUBLIC_ORIGIN: ${CCTVSCAN_PUBLIC_ORIGIN:-http://127.0.0.1:14910}
+      CCTVSCAN_ARTIFACT_DIR: /var/lib/cctvscan/jobs
+      CCTVSCAN_PROXY_TEST_URL: ${CCTVSCAN_PROXY_TEST_URL:-}
+    volumes:
+      - ${CCTVSCAN_SECRETS_DIR:-./deploy/secrets}/key.bin:/run/secrets/key.bin:ro
+      - ${CCTVSCAN_SECRETS_DIR:-./deploy/secrets}/database-url:/run/secrets/database-url:ro
+      - pg_socket:/var/run/postgresql:ro
+      - work:/var/lib/cctvscan:ro
+    depends_on:
+      db: {condition: service_healthy}
+      init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, console-healthcheck]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+  worker:
+    <<: *app
+    command: [cctvscan-worker]
+    mem_limit: ${CCTVSCAN_WORKER_MEMORY:-512m}
+    memswap_limit: ${CCTVSCAN_WORKER_MEMORY:-512m}
+    cpus: 1.0
+    pids_limit: 128
+    stop_grace_period: 35s
+    environment:
+      <<: *env
+      CCTVSCAN_WORKER_ROOT: /var/lib/cctvscan/jobs
+      CCTVSCAN_SCANNER_BIN: /usr/local/bin/cctvscan
+      GOMAXPROCS: "1"
+      GOMEMLIMIT: 240MiB
+    volumes:
+      - ${CCTVSCAN_SECRETS_DIR:-./deploy/secrets}/key.bin:/run/secrets/key.bin:ro
+      - ${CCTVSCAN_SECRETS_DIR:-./deploy/secrets}/database-url:/run/secrets/database-url:ro
+      - pg_socket:/var/run/postgresql:ro
+      - work:/var/lib/cctvscan
+    depends_on:
+      api: {condition: service_healthy}
+  web:
+    image: ${CCTVSCAN_WEB_IMAGE:-cctvscan-console-web:local}
+    build: ./web
+    user: "101:101"
+    network_mode: service:api
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=8m"]
+    mem_limit: ${CCTVSCAN_WEB_MEMORY:-32m}
+    memswap_limit: ${CCTVSCAN_WEB_MEMORY:-32m}
+    cpus: 0.25
+    pids_limit: 30
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+volumes:
+  pg_data:
+  pg_socket:
+  work:

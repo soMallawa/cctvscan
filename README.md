@@ -2,6 +2,22 @@
 
 A Go CLI for authorized IPv4 device discovery, camera-oriented fingerprinting and media endpoint inspection. Uses Masscan for external SYN discovery and Naabu for CONNECT discovery/verification. **An open port, vendor hint, protocol response, candidate URL, media header and playable stream are different kinds of evidence.** CCTVScan does not claim playback verification or exploitability.
 
+## Private operations console
+
+The Quasar web application, Go API, PostgreSQL-backed queue and isolated scanner worker are included. Start the loopback-only lab with:
+
+```sh
+export CCTVSCAN_UID="$(id -u)" CCTVSCAN_GID="$(id -g)"
+export CCTVSCAN_AUTH_MODE=local
+export CCTVSCAN_PUBLIC_ORIGIN=http://127.0.0.1:14910
+# Run once for a NEW installation; never replace an existing encryption key.
+python3 deploy/init-secrets.py
+docker compose --parallel 1 --env-file /dev/null build
+docker compose --env-file /dev/null up -d --wait
+```
+
+Open `http://127.0.0.1:14910`. This is a local lab, not public authentication. For remote access, configure and verify Cloudflare Access before exposing a tunnel. See [console operations](docs/console-operations.md) for secret preservation, resource limits, backup/restore, tests and deployment boundaries. See [delivery scope](docs/console-delivery.md) for verified capabilities and explicit limitations. The standalone CLI remains independent.
+
 ## Build a fresh binary
 
 Requirements: Go 1.25+, C compiler and libpcap development headers/libraries. External SYN discovery also needs Masscan installed before running; CONNECT discovery does not need the Masscan executable. Install system dependencies during setup, never during a scan.

@@ -19,6 +19,8 @@ import (
 type HTTPEndpoint struct {
 	Port                           int
 	URL, Server, ContentType, Auth string
+	FinalURL                       string
+	RootEvidence                   *RootEvidence `json:",omitempty"`
 	StatusCode                     int
 	State, Error                   string
 	BodySnippet                    string `json:"-"`
@@ -178,6 +180,7 @@ func ProbeHTTPMeta(ctx context.Context, host string, ports []int) HTTPMeta {
 	meta := HTTPMeta{State: "not_applicable"}
 	client := httptransport.Client(2 * time.Second)
 	var errs []error
+	archivedBytes := 0
 	for _, p := range ports {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
@@ -206,8 +209,23 @@ func ProbeHTTPMeta(ctx context.Context, host string, ports []int) HTTPMeta {
 			e.Server = resp.Header.Get("Server")
 			e.ContentType = resp.Header.Get("Content-Type")
 			e.Auth = resp.Header.Get("WWW-Authenticate")
-			data, readErr := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			data, readErr := io.ReadAll(io.LimitReader(resp.Body, RootEvidenceLimit+1))
 			resp.Body.Close()
+			truncated := len(data) > RootEvidenceLimit
+			if truncated {
+				data = data[:RootEvidenceLimit]
+			}
+			if archivedBytes+len(data) <= HostEvidenceLimit {
+				e.RootEvidence = captureRootEvidence(data, truncated, e.Auth)
+				archivedBytes += len(data)
+			}
+			if resp.Request != nil && resp.Request.URL != nil {
+				final := *resp.Request.URL
+				final.User = nil
+				final.RawQuery = ""
+				final.Fragment = ""
+				e.FinalURL = final.String()
+			}
 			e.BodySnippet = string(data)
 			e.State = "responded"
 			if readErr != nil {

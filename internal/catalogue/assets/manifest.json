@@ -1,0 +1,15 @@
+{
+  "source": "https://github.com/ch-bas/cctv-camera-database",
+  "revision": "7616a0a0944522159c3daad4a50988b740cb4d65",
+  "license": "CC0-1.0",
+  "models": 29582,
+  "brands": 235,
+  "profiles": 420,
+  "source_hashes": {
+    "data/cameras.json": "f0e1239b5f5da84c559a3da2de96ccca48b7db02e5b08c94f33651f8b6631415",
+    "data/rtsp-patterns.json": "ba0ad89d351abee33a182c15abc0ecab4a1a50feeb24d27a0ffeb5f14a69ce87",
+    "LICENSE": "1a611d9e25eace18cc2eef7b577b08d24e6101f02f145b19be6d8478b4e71333"
+  },
+  "pack_sha256": "388155796971b3a73bbc5ac89622a485810f18590c55f08c9b3883653fb01b5d",
+  "format_version": 1
+}

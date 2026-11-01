@@ -1,0 +1,15 @@
+*
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!deploy/
+!deploy/healthcheck.sh
+!bin/
+!bin/cctvscan
+!bin/cctvscan-server
+!bin/cctvscan-worker
+**/*_test.go
+deploy/secrets

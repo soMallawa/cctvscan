@@ -2,8 +2,10 @@ package processor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/postfix/cctvscan/internal/catalogue"
 	"github.com/postfix/cctvscan/internal/credbrute"
 	"github.com/postfix/cctvscan/internal/fingerprint"
 	"github.com/postfix/cctvscan/internal/httptransport"
@@ -19,6 +21,8 @@ import (
 
 type StageError struct{ Stage, Message string }
 type HostResult struct {
+	AutomaticVerification       []AutomaticCheck      `json:"AutomaticVerification,omitempty"`
+	Catalogue                   *catalogue.Assessment `json:"Catalogue,omitempty"`
 	Host                        string
 	Ports, HTTPPorts, RTSPPorts []int
 	HTTPMeta                    probe.HTTPMeta
@@ -38,6 +42,7 @@ type HostResult struct {
 	Error                       error `json:"-"`
 }
 type Options struct {
+	Observer                         func(HostResult) `json:"-"`
 	Workers                          int
 	HostTimeout                      time.Duration
 	CheckCredentials, Capture, ONVIF bool
@@ -63,6 +68,7 @@ func (p *OptimizedProcessor) ProcessHosts(ctx context.Context, hosts map[string]
 	out := make([]HostResult, len(keys))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
+	var observeMu sync.Mutex
 	workers := min(max(1, p.Options.Workers), len(keys))
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -70,6 +76,11 @@ func (p *OptimizedProcessor) ProcessHosts(ctx context.Context, hosts map[string]
 			defer wg.Done()
 			for n := range jobs {
 				out[n] = p.processHost(ctx, keys[n], hosts[keys[n]])
+				if p.Options.Observer != nil {
+					observeMu.Lock()
+					p.Options.Observer(out[n])
+					observeMu.Unlock()
+				}
 			}
 		}()
 	}
@@ -113,6 +124,7 @@ func (p *OptimizedProcessor) processHost(parent context.Context, host string, po
 	}
 	defer cancel()
 	r := HostResult{Host: host, Ports: append([]int(nil), ports...), State: "complete", CredentialState: "not_tested"}
+	r.CameraDetection = probe.CameraFromEndpoint(probe.HTTPEndpoint{})
 	sort.Ints(r.Ports)
 	r.HTTPPorts = probe.FilterHTTPish(r.Ports)
 	r.RTSPPorts = probe.FilterRTSP(r.Ports)
@@ -131,27 +143,44 @@ func (p *OptimizedProcessor) processHost(parent context.Context, host string, po
 	r.fail("http_metadata", pr.HTTPMeta.Error)
 	r.Brand, r.BrandNote = fingerprint.OptimizedDetect(pr.HTTPMeta.Server, pr.HTTPMeta.BodySnippet, pr.RTSPInfo.Server)
 	best := -1
+	var candidateHTTPPorts []int
 	for _, e := range pr.HTTPMeta.Endpoints {
 		if e.State == "failed" {
 			continue
 		}
 		d := probe.CameraFromEndpoint(e)
 		r.CameraDetections = append(r.CameraDetections, d)
+		if d.State == "possible" {
+			candidateHTTPPorts = append(candidateHTTPPorts, e.Port)
+		}
 		b, n := fingerprint.OptimizedDetect(e.Server, e.BodySnippet, "")
 		if b != "" && b != "Unknown cam" && (r.Brand == "" || r.Brand == "Unknown cam") {
 			r.Brand = b
 			r.BrandNote = n
 		}
 		score := 0
+		if d.State == "possible" {
+			score = 2
+		}
 		if d.IsCamera {
-			score = 1
+			score = 4
 		}
 		if d.Brand != "" && d.Brand != "Unknown cam" {
-			score += 2
+			score++
 		}
 		if score > best {
 			r.CameraDetection = d
 			best = score
+		}
+	}
+	if c, err := catalogue.Default(); err == nil {
+		raw, _ := json.Marshal(r)
+		a := c.AnalyzeRecord(raw)
+		r.Catalogue = &a
+		if a.State == "model_candidate" && r.CameraDetection.State == "unknown" {
+			r.CameraDetection.State = "possible"
+			r.CameraDetection.Reason = "Explicit model text matches catalogue candidates; device identity remains unverified."
+			candidateHTTPPorts = append(candidateHTTPPorts, r.HTTPPorts...)
 		}
 	}
 	r.CVEs = fingerprint.OptimizedCVEsForBrand(r.Brand)
@@ -162,7 +191,7 @@ func (p *OptimizedProcessor) processHost(parent context.Context, host string, po
 	if p.Options.CheckCredentials {
 		pages, discoveryErr := probe.FindLoginPagesDetailed(ctx, host, r.HTTPPorts)
 		r.LoginPages = util.Uniq(append(r.LoginPages, pages...))
-		cr, e := credbrute.CheckCredentials(ctx, r.LoginPages, p.credsFile, 5*time.Second)
+		cr, e := credbrute.CheckCredentialsForVendor(ctx, r.LoginPages, p.credsFile, r.Brand, 5*time.Second)
 		r.Credentials = cr.Found
 		r.CredentialState = cr.State
 		if discoveryErr != nil && cr.State != "found" && cr.State != "canceled" {
@@ -170,11 +199,16 @@ func (p *OptimizedProcessor) processHost(parent context.Context, host string, po
 		}
 		r.fail("credentials", errors.Join(discoveryErr, e))
 	}
+	if p.automaticVerify(ctx, &r) {
+		return r
+	}
 	// Deep path discovery is reserved for likely camera hosts. Non-HTTP protocol
 	// paths remain labeled candidates, never fabricated success or playback proof.
 	selected := append([]int(nil), r.RTSPPorts...)
 	if r.CameraDetection.IsCamera || r.RTSPInfo.Any || r.ONVIFResult != "" {
 		selected = append(selected, r.HTTPPorts...)
+	} else {
+		selected = append(selected, candidateHTTPPorts...)
 	}
 	for _, port := range r.Ports {
 		if (port >= 1935 && port <= 1939) || (port >= 1755 && port <= 1760) {

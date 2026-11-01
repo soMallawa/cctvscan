@@ -1,0 +1,13 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.prebuilt
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.prebuilt
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.prebuilt

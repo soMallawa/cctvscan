@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/postfix/cctvscan/internal/events"
 	"github.com/postfix/cctvscan/internal/httptransport"
 	"github.com/postfix/cctvscan/internal/portscan"
 	"github.com/postfix/cctvscan/internal/processor"
@@ -22,6 +23,7 @@ import (
 
 var (
 	planFlag             = flag.Bool("plan", false, "Validate inputs and print a compact JSON plan without scanning")
+	eventFDFlag          = flag.Int("event-fd", 0, "Optional private pipe descriptor for versioned scanner observations")
 	maxTargetsFlag       = flag.Uint64("max-targets", 1<<20, "Maximum requested address upper bound; 0 explicitly disables the scope guard")
 	hostWorkersFlag      = flag.Int("host-workers", 5, "Concurrent host workers (1-256)")
 	hostTimeoutFlag      = flag.Duration("host-timeout", 30*time.Second, "Per-host wall-clock processing budget")
@@ -177,6 +179,16 @@ func main() {
 		}
 		return
 	}
+	var observer *events.Writer
+	if *eventFDFlag != 0 {
+		var closeObserver func()
+		observer, closeObserver, err = events.OpenFD(*eventFDFlag)
+		if err != nil {
+			log.Fatal("private event descriptor unavailable")
+		}
+		defer closeObserver()
+		opts.Observer = func(result processor.HostResult) { _ = observer.Emit("host_result", result) }
+	}
 	// Fail locally before discovery if the output directory is not writable.
 	if err = os.MkdirAll(*outputFlag, 0700); err != nil {
 		log.Fatal("output directory unavailable")
@@ -189,6 +201,9 @@ func main() {
 	os.Remove(f.Name())
 	fmt.Printf("Scanning %d compact target entries (address upper bound %d), %d unique ports\n", len(targetList), addressCount, count)
 	rep := report.ScanReport{SchemaVersion: 1, State: "complete", Targets: targetList, RequestedAddressUpperBound: addressCount, Ports: portsToScan, Results: []processor.HostResult{}}
+	if observer != nil {
+		_ = observer.Emit("phase", map[string]string{"phase": "port_discovery"})
+	}
 	results, scanErr := portscan.NewHybridScanner(cfg).Scan(ctx, targetList)
 	if scanErr != nil {
 		rep.State = "failed"
@@ -198,6 +213,9 @@ func main() {
 		rep.VerifiedPorts = results
 		engine := processor.NewOptimizedProcessor(*debugFlag, *credsFlag, *outputFlag)
 		engine.Options = opts
+		if observer != nil {
+			_ = observer.Emit("phase", map[string]string{"phase": "host_processing"})
+		}
 		rep.Results = engine.ProcessHosts(ctx, results)
 		engine.PrintResults(rep.Results)
 		for _, r := range rep.Results {

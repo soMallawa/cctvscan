@@ -1,0 +1,1 @@
+<template><q-page class="workspace"><header class="page-header"><div><p class="page-kicker">CCTVScan</p><h1>Page not found</h1><p class="page-description">This address does not match a console page.</p></div></header><q-btn unelevated color="primary" text-color="dark" to="/jobs" label="Return to jobs"/></q-page></template>

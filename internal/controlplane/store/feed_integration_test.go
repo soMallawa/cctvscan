@@ -1,0 +1,4 @@
+//go:build integration
+package store
+import("context";"encoding/json";"testing";"time")
+func TestGlobalEventCommitOrder(t *testing.T){s,_:=fixture(t);ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second);defer cancel();a,e:=s.CreateJob(ctx,input());if e!=nil{t.Fatal(e)};b,e:=s.CreateJob(ctx,input());if e!=nil{t.Fatal(e)};tx,e:=s.pool.Begin(ctx);if e!=nil{t.Fatal(e)};defer tx.Rollback(ctx);first,e:=s.AddEventTx(ctx,tx,a.ID,"state",json.RawMessage(`{}`));if e!=nil{t.Fatal(e)};done:=make(chan error,1);go func(){_,e:=s.AddEvent(ctx,b.ID,"state",json.RawMessage(`{}`));done<-e}();select{case e:=<-done:t.Fatalf("later global cursor published before earlier transaction committed: %v first=%d",e,first.Seq);case <-time.After(100*time.Millisecond):};if e=tx.Commit(ctx);e!=nil{t.Fatal(e)};if e=<-done;e!=nil{t.Fatal(e)}}

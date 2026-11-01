@@ -141,3 +141,15 @@ func (e *safeError) Temporary() bool { return false }
 func (e *safeError) Is(target error) bool {
 	return target == e.kind || (e.canceled && target == context.Canceled) || (e.deadline && target == context.DeadlineExceeded)
 }
+
+// ConfiguredProxy returns a copy of the explicit startup route for child checks.
+// Its userinfo is secret and must not be logged or serialized.
+func ConfiguredProxy() *url.URL {
+	policy.RLock()
+	defer policy.RUnlock()
+	if policy.proxy == nil {
+		return nil
+	}
+	u := *policy.proxy
+	return &u
+}

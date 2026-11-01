@@ -1,11 +1,14 @@
 package credbrute
 
 import (
-	"bufio"
 	"context"
 	"errors"
+	"github.com/postfix/cctvscan/internal/connection"
+	credentialfile "github.com/postfix/cctvscan/internal/credentials"
 	"github.com/postfix/cctvscan/internal/httptransport"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -63,8 +66,11 @@ func firstSuccessful(parent context.Context, jobs <-chan checkJob, workers int, 
 	return "", errors.Join(append(errs, parent.Err())...)
 }
 func CheckCredentials(ctx context.Context, urls []string, file string, timeout time.Duration) (CredentialResult, error) {
+	return CheckCredentialsForVendor(ctx, urls, file, "", timeout)
+}
+func CheckCredentialsForVendor(ctx context.Context, urls []string, file, brand string, timeout time.Duration) (CredentialResult, error) {
 	r := CredentialResult{State: "not_tested"}
-	creds, e := loadCredentials(file)
+	creds, e := LoadVendorCredentials(file, brand)
 	if e != nil {
 		return r, e
 	}
@@ -80,6 +86,7 @@ func CheckCredentials(ctx context.Context, urls []string, file string, timeout t
 	producerDone := make(chan struct{})
 	var producerErr error
 	var attempts atomic.Int64
+	var challenges sync.Map
 	go func() {
 		defer close(producerDone)
 		defer close(jobs)
@@ -87,14 +94,15 @@ func CheckCredentials(ctx context.Context, urls []string, file string, timeout t
 			if work.Err() != nil {
 				return
 			}
-			ok, err := requiresBasicAuth(work, client, u)
+			challenge, err := authChallenge(work, client, u)
 			if err != nil {
 				producerErr = errors.Join(producerErr, err)
 				continue
 			}
-			if !ok {
+			if challenge == "" {
 				continue
 			}
+			challenges.Store(u, challenge)
 			for _, c := range creds {
 				select {
 				case jobs <- checkJob{u, c}:
@@ -106,7 +114,8 @@ func CheckCredentials(ctx context.Context, urls []string, file string, timeout t
 	}()
 	found, err := firstSuccessful(work, jobs, 2, func(ctx context.Context, j checkJob) (bool, error) {
 		attempts.Add(1)
-		return checkCredential(ctx, client, j.url, j.credential)
+		challenge, _ := challenges.Load(j.url)
+		return checkCredentialChallenge(ctx, client, j.url, j.credential, challenge.(string))
 	})
 	cancel()
 	<-producerDone
@@ -131,36 +140,26 @@ func OptimizedBruteForce(ctx context.Context, host string, urls []string, file s
 	r, _ := CheckCredentials(ctx, urls, file, timeout)
 	return r.Found
 }
-func loadCredentials(path string) ([]string, error) {
+func loadCredentials(path string) ([]string, error) { return LoadVendorCredentials(path, "") }
+func LoadVendorCredentials(path, brand string) ([]string, error) {
 	f, e := os.Open(path)
 	if e != nil {
 		return nil, e
 	}
 	defer f.Close()
-	stat, e := f.Stat()
+	b, e := io.ReadAll(io.LimitReader(f, (1<<20)+1))
 	if e != nil {
 		return nil, e
 	}
-	if stat.Size() > 1024*1024 {
-		return nil, errors.New("credential file exceeds 1 MiB limit")
+	set, e := credentialfile.Parse(b)
+	if e != nil {
+		return nil, e
 	}
-	var out []string
-	seen := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		s := strings.TrimSpace(sc.Text())
-		if s == "" || strings.HasPrefix(s, "#") {
-			continue
-		}
-		if !strings.Contains(s, ":") {
-			return nil, errors.New("invalid credential file format")
-		}
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
+	out := []string{}
+	for _, entry := range set.Select(brand) {
+		out = append(out, entry.Pair)
 	}
-	return out, sc.Err()
+	return out, nil
 }
 func requiresBasicAuth(ctx context.Context, client *http.Client, u string) (bool, error) {
 	req, e := http.NewRequestWithContext(ctx, "GET", u, nil)
@@ -176,19 +175,49 @@ func requiresBasicAuth(ctx context.Context, client *http.Client, u string) (bool
 }
 
 func checkCredential(ctx context.Context, client *http.Client, u, c string) (bool, error) {
+	return checkCredentialChallenge(ctx, client, u, c, `Basic realm="camera"`)
+}
+func checkCredentialChallenge(ctx context.Context, client *http.Client, u, c, challenge string) (bool, error) {
 	a, b, ok := strings.Cut(c, ":")
 	if !ok {
 		return false, errors.New("invalid credential format")
+	}
+	parsed, e := url.Parse(u)
+	if e != nil {
+		return false, errors.New("invalid credential endpoint")
+	}
+	header, _, ok := connection.ChallengeAuthorization(challenge, "GET", parsed.RequestURI(), a, b)
+	if !ok {
+		return false, errors.New("unsupported authentication method")
 	}
 	req, e := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if e != nil {
 		return false, e
 	}
-	req.SetBasicAuth(a, b)
+	req.Header.Set("Authorization", header)
 	r, e := httptransport.Do(client, req)
 	if e != nil {
 		return false, e
 	}
 	defer r.Body.Close()
-	return r.StatusCode == 200, nil
+	return r.StatusCode >= 200 && r.StatusCode < 300, nil
+}
+func authChallenge(ctx context.Context, client *http.Client, u string) (string, error) {
+	req, e := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if e != nil {
+		return "", e
+	}
+	r, e := httptransport.Do(client, req)
+	if e != nil {
+		return "", e
+	}
+	defer r.Body.Close()
+	if r.StatusCode != 401 {
+		return "", nil
+	}
+	challenge := connection.ChooseChallenge(r.Header.Values("WWW-Authenticate"))
+	if _, _, ok := connection.ChallengeAuthorization(challenge, "GET", req.URL.RequestURI(), "", ""); !ok {
+		return "", errors.New("unsupported authentication method")
+	}
+	return challenge, nil
 }

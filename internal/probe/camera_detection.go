@@ -16,19 +16,22 @@ import (
 
 // CameraDetectionResult contains detailed camera detection information
 type CameraDetectionResult struct {
-	IsCamera     bool
-	Brand        string
-	Model        string
-	ServerHeader string
-	ContentType  string
-	Status       int
-	Keywords     []string
-	Endpoints    []string
-	AuthRequired bool
-	AuthType     string
-	PageTitle    string
-	FormFields   []string
-	Indicators   []string
+	IsCamera        bool
+	State           string
+	Reason          string
+	EvidenceVersion int
+	Brand           string
+	Model           string
+	ServerHeader    string
+	ContentType     string
+	Status          int
+	Keywords        []string
+	Endpoints       []string
+	AuthRequired    bool
+	AuthType        string
+	PageTitle       string
+	FormFields      []string
+	Indicators      []string
 }
 
 // Camera server headers and keywords (expanded from Python version)
@@ -119,6 +122,42 @@ func CameraFromEndpoint(e HTTPEndpoint) CameraDetectionResult {
 	if e.BodySnippet != "" {
 		analyzeContent(&r, e.BodySnippet)
 	}
+	return finalizeCameraEvidence(r, e.State)
+}
+
+// finalizeCameraEvidence separates weak review signals from corroborated labels.
+// An absent match is unknown, never proof of a non-camera.
+func finalizeCameraEvidence(r CameraDetectionResult, responseState string) CameraDetectionResult {
+	candidate := r.IsCamera || r.Brand != ""
+	r.IsCamera = false
+	r.State, r.Reason, r.EvidenceVersion = "unknown", "No camera-specific evidence in the root response; device type is unknown.", 1
+	if responseState == "failed" || r.Status == 0 {
+		r.Reason = "No usable HTTP response; device type is unknown."
+		return r
+	}
+	title := strings.ToLower(strings.TrimSpace(r.PageTitle))
+	server := strings.ToLower(strings.TrimSpace(r.ServerHeader))
+	if title == "web client" || title == "webclient" {
+		candidate = true
+		r.Reason = "Generic Web Client title; camera/DVR candidate, not device proof."
+	} else if server == "webs" || server == "goahead" || server == "thttpd" {
+		candidate = true
+		r.Reason = "Shared embedded web-server banner; device type is unverified."
+	} else if candidate {
+		r.Reason = "Uncorroborated vendor or camera-related text; review required."
+	}
+	if candidate {
+		r.State = "possible"
+	}
+	strongContext := false
+	for _, keyword := range r.Keywords {
+		if keyword == "ip camera" || keyword == "network camera" || keyword == "surveillance camera" {
+			strongContext = true
+		}
+	}
+	if r.Brand != "" && (strongContext || r.Model != "") && r.Status >= 200 && r.Status < 300 && responseState != "partial" {
+		r.State, r.IsCamera, r.Reason = "supported", true, "Vendor fingerprint corroborated by camera-specific page content."
+	}
 	return r
 }
 
@@ -127,6 +166,7 @@ func analyzePort(ctx context.Context, client *http.Client, baseURL string) Camer
 	result := CameraDetectionResult{
 		IsCamera: false,
 		Status:   0,
+		State:    "unknown", EvidenceVersion: 1, Reason: "No usable HTTP response; device type is unknown.",
 	}
 
 	// Check main page
@@ -173,10 +213,10 @@ func analyzePort(ctx context.Context, client *http.Client, baseURL string) Camer
 
 	// Check for DVR/NVR specific patterns
 	if isDVRNVR(result) {
-		result.Indicators = append(result.Indicators, "DVR/NVR device detected")
+		result.Indicators = append(result.Indicators, "Recorder-related hints; device type requires corroboration")
 	}
 
-	return result
+	return finalizeCameraEvidence(result, "responded")
 }
 
 // detectBrandFromServer detects camera brand from server header
